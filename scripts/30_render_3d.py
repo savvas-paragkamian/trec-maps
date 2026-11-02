@@ -31,6 +31,19 @@ def main() -> None:
     derived, out = C.transect_dirs(params, tcfg["name"])
     grid = terrain.load_grid(derived)
     meta, z, land = grid["meta"], grid["z"], grid["land"]
+    camera_cfg = R["camera"]
+    if str(camera_cfg.get("azimuth_deg", "auto")).lower() == "auto":
+        # the camera sits over the sea on the transect's seaward bearing (inland -> shoreline), snapped to a plate edge
+        from pyproj import Geod
+        ls = pd.read_csv(derived / "land_samples.csv").sort_values("shore_distance_m")
+        shore, inland = ls.iloc[0], ls.iloc[-1]
+        bearing, _, _ = Geod(ellps="WGS84").inv(float(inland.lon), float(inland.lat), float(shore.lon), float(shore.lat))
+        snap = float(camera_cfg.get("azimuth_snap_deg", 90) or 0)
+        az = (round(bearing / snap) * snap) % 360 if snap else bearing % 360
+        camera_cfg["azimuth_deg"] = float(az)
+        log(f"camera azimuth {az:.0f} deg (seaward bearing {bearing % 360:.0f} deg of the land transect)")
+    if str(R["sun"].get("azimuth_deg", "auto")).lower() == "auto":
+        R["sun"]["azimuth_deg"] = (float(camera_cfg["azimuth_deg"]) + float(R["sun"].get("offset_from_camera_deg", -55))) % 360
     q = R["quality"][args.quality]
     size, frames = (int(q["size"][0]), int(q["size"][1])), int(q["frames"])
     W, H = size
@@ -53,6 +66,8 @@ def main() -> None:
         camera = {k: saved[k] for k in ("model", "origin", "look_at", "up", "fov_y")}
         exag, sea_f, pad, base_z = saved.get("exaggeration", exag), saved.get("sea_factor", sea_f), \
             saved.get("pad", pad), saved.get("base_z", base_z)
+        if "azimuth_deg" in saved:
+            camera_cfg["azimuth_deg"] = float(saved["azimuth_deg"])
         log(f"reusing {cache.name}")
     else:
         albedo = render.make_albedo(z, land, R["albedo"], grid["landcover"], params["sources"]["landcover"])
@@ -72,7 +87,7 @@ def main() -> None:
         cut = np.all(np.abs(res["albedo"] - cut_lin[None, None, :]) < 0.02, axis=-1) if pad > 0 else np.zeros(depth.shape, bool)
         np.savez_compressed(cache, rgba=rgba, depth=depth, cut=cut)
         cam_file.write_text(json.dumps({**camera, "size": size, "exaggeration": exag, "sea_factor": sea_f,
-                                        "pad": pad, "base_z": base_z}, indent=2))
+                                        "pad": pad, "base_z": base_z, "azimuth_deg": float(camera_cfg["azimuth_deg"])}, indent=2))
         log(f"rendered in {res['seconds']:.0f} s; misses {np.isnan(depth).mean():.1%} of the frame")
 
     page_style = R["page"]
@@ -103,21 +118,20 @@ def main() -> None:
 
         # sea level along the walls, and the vertical axis at the south-west corner
         if pad > 0:
-            o = render.block_outline(meta, pad)
-            south = np.column_stack([o["xs"], np.zeros_like(o["xs"]), np.full_like(o["xs"], o["z_south"])])
-            wl = project(south)
+            az = float(camera_cfg["azimuth_deg"])
+            wl = project(render.front_edge(meta, pad, az))
             wl_vis = render.visible(wl, depth, kind, rel_tol=0.03, miss_ok=True)
             page.polyline(wl["px"], wl["py"], wl_vis, color=B.get("waterline_color", "#2f6fa3"), width=3.0, occluded_alpha=0.0)
             A = B.get("axis") or {}
             ax_geo = render.depth_axis(meta, pad, base_z, float(z[land].max()) if land.any() else 0.0, exag, sea_f,
-                                       float(A.get("step_land_m", 100)), float(A.get("step_sea_m", 50)))
+                                       float(A.get("step_land_m", 100)), float(A.get("step_sea_m", 50)), azimuth_deg=az)
             ln = project(ax_geo["line"])
             axis_col = A.get("color", page_style["text"])
             page.segment(ln["px"][0], ln["py"][0], ln["px"][1], ln["py"][1], color=axis_col, width=3)
             for pt, label in ax_geo["ticks"]:
-                t = project([pt, pt + np.array([ax_geo["tick_dx"], 0.0, 0.0])])
-                page.segment(t["px"][0], t["py"][0], t["px"][1], t["py"][1], color=axis_col, width=2.5)
-                page.text(t["px"][0] - page.px(14), t["py"][0], label, size=26, color=axis_col, ha="right", va="center")
+                t = project([pt])
+                page.segment(t["px"][0] - page.px(12), t["py"][0], t["px"][0], t["py"][0], color=axis_col, width=2.5)
+                page.text(t["px"][0] - page.px(18), t["py"][0], label, size=26, color=axis_col, ha="right", va="center")
             top = project([ax_geo["line"][1]])
             page.text(top["px"][0] - page.px(14), top["py"][0] - page.px(40),
                       f"metres above /\nbelow sea level\n(x{exag:g} land, x{exag * sea_f:g} sea)",
@@ -138,7 +152,7 @@ def main() -> None:
             page.marker(sx, sy, size=18, face="white", edge=page_style["station"], edge_width=2.5)
             for i, d in enumerate(casts):
                 page.marker(pr["px"][2 + i], pr["py"][2 + i], size=22, face=page_style["station"], edge="white")
-            depth_txt = f"sea floor {abs(float(st.bathymetry_m)):.0f} m" if not math.isnan(float(st.bathymetry_m)) else ""
+            depth_txt = P.floor_label(st)
             cast_txt = ("sampled at " + ", ".join(f"{d:g}" for d in casts) + " m") if casts else ""
             label = "\n".join(t for t in (f"{st.alias}  {st.station_name}", cast_txt, depth_txt,
                                           f"{int(st.n_samples)} samples") if t)

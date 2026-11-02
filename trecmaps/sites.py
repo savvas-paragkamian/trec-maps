@@ -132,7 +132,9 @@ def load_marine_stations(params: dict, site_ids: list[str]) -> pd.DataFrame:
             "sounder_max_m": max(sounder) if sounder else math.nan,
             "n_samples": int(len(rows)),
         })
-    return pd.DataFrame(records)
+    columns = ["site_id", "alias", "station_name", "lat", "lon", "bathymetry_m", "cast_depths_m",
+               "sounder_min_m", "sounder_max_m", "n_samples"]
+    return pd.DataFrame(records, columns=columns)
 
 
 def extend_point(from_lonlat, to_lonlat, distance_m: float) -> tuple[float, float]:
@@ -142,8 +144,10 @@ def extend_point(from_lonlat, to_lonlat, distance_m: float) -> tuple[float, floa
     return float(lon), float(lat)
 
 
-def path_points(tcfg: dict, land: pd.DataFrame, stations: pd.DataFrame, land_extension_m: float) -> list[dict]:
-    """Ordered path: inland end -> shoreline -> [waypoints] -> stations, each {name, lon, lat, kind}."""
+def path_points(tcfg: dict, land: pd.DataFrame, stations: pd.DataFrame, land_extension_m: float,
+                sea_extension_m: float = 0.0) -> list[dict]:
+    """Ordered path: inland end -> shoreline -> [waypoints] -> stations, each {name, lon, lat, kind}.
+    Without stations the path continues `sea_extension_m` offshore along the transect's bearing."""
     land_path = tcfg.get("land_path", "from_samples")
     if land_path == "from_samples":
         shore, inland = land.iloc[0], land.iloc[-1]
@@ -166,6 +170,9 @@ def path_points(tcfg: dict, land: pd.DataFrame, stations: pd.DataFrame, land_ext
                        "site_id": st.site_id})
         for lon, lat in waypoints.get(st.site_id, []):
             points.append({"name": "waypoint", "lon": float(lon), "lat": float(lat), "kind": "waypoint"})
+    if len(stations) == 0 and sea_extension_m > 0:
+        sea_end = extend_point(inland_ll, shore_ll, sea_extension_m)
+        points.append({"name": "offshore end", "lon": sea_end[0], "lat": sea_end[1], "kind": "sea"})
     return points
 
 
@@ -173,7 +180,8 @@ def load_path(params: dict, tcfg: dict) -> tuple[list[dict], pd.DataFrame, pd.Da
     """(path points, land positions, stations) for a transect."""
     land = load_land_positions(params, tcfg["land_site"])
     stations = load_marine_stations(params, list(tcfg.get("marine_sites") or []))
-    points = path_points(tcfg, land, stations, params["profile"]["land_extension_m"])
+    points = path_points(tcfg, land, stations, params["profile"]["land_extension_m"],
+                         float(params["profile"].get("sea_extension_m", 0) or 0))
     return points, land, stations
 
 

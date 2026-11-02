@@ -28,4 +28,35 @@ transects:
     render:
       exaggeration: 3
       camera: {azimuth_deg: 175, elevation_deg: 22, fill: 0.66, target_shift_north_frac: -0.06}
-      water: {depth_scale_m: 8, surface: {wave_scale: 0.3, refraction_gain: 100}}   # a bay under 10 m deep, 2.4 km wide
+      water: {depth_scale_m: 6, surface: {wave_scale: 0.3, refraction_gain: 100}}   # a bay under 10 m deep, 2.4 km wide
+  psatha:
+    title: "Psatha"
+    subtitle: "TREC land-sea transect 041-01 (Gulf of Corinth) with Tara station TE_172"
+    land_site: "041-01"
+    marine_sites: ["041-07"]
+    waypoints: []
+    land_path: from_samples
+    render: {exaggeration: 1.5, camera: {azimuth_deg: 295, elevation_deg: 28, fill: 0.7}}   # a bay walled by 576 m peaks: diagonal view from the NW, less exaggeration
+  salamina:
+    title: "Salamina"
+    subtitle: "TREC land-sea transect 041-02 (Saronic Gulf) with Tara station TE_173"
+    land_site: "041-02"
+    marine_sites: ["041-08"]
+    waypoints: []
+    land_path: from_samples
+  thoriko:
+    title: "Thoriko"
+    subtitle: "TREC land-sea transect 041-04 (Thoriko marina) with Tara station TE_178"
+    land_site: "041-04"
+    marine_sites: ["041-13"]
+    waypoints:                          # the leg to TE_178 would cross the headland east of the marina
+      - after: "shoreline"
+        points: [[24.07092, 37.73163]]
+    land_path: from_samples
+  schinias:
+    title: "Schinias"
+    subtitle: "TREC land-sea transect 041-05 (Schinias beach, Marathon); no Tara station nearby, the profile continues 2 km offshore"
+    land_site: "041-05"
+    marine_sites: []
+    waypoints: []
+    land_path: from_samples

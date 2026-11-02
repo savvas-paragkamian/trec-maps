@@ -4,9 +4,15 @@ Map scripts for the TREC expedition (EMBL, *Traversing European Coastlines*): la
 **profile maps** of the sampling transects, built from a DEM on land and EMODnet bathymetry
 at sea, as 2D profiles (matplotlib) and 3D path-traced blocks (forge3d). Python only.
 
-The pilot is the Athens supersite at Anavyssos: the soil transect 041-03 (HCMR) with the
-Tara stations TE_176 (1.2 km offshore, 9 m) and TE_177 (131 m), as `anavyssos`, plus a
-nearshore zoom `anavyssos_nearshore` (the soil transect and TE_176 only, 5 m cells).
+All five Athens land transects are configured (`config/transects.yml`):
+
+| transect | land site | Tara station(s) |
+|---|---|---|
+| `anavyssos` (+ `anavyssos_nearshore`, a 5 m zoom) | 041-03, HCMR supersite | TE_176 (1.2 km, 9 m), TE_177 (10 km, 131 m) |
+| `psatha` | 041-01, Gulf of Corinth | TE_172 (1.6 km, 77 m) |
+| `salamina` | 041-02, Saronic Gulf | TE_173 (0.6 km, 18 m) |
+| `thoriko` | 041-04, Thoriko marina | TE_178 (6 km; 22 m recorded, 76 m in EMODnet at that position) |
+| `schinias` | 041-05, Marathon | none nearby; the profile continues 2 km offshore along the transect bearing |
 
 | output | what |
 |---|---|
@@ -76,7 +82,10 @@ Steps, each a thin script over `trecmaps/`:
   Coordinates come from the xlsx exports at run time.
 
 To add a transect, add an entry and run `make pilot T=<name>`. `20_profile_2d.py` warns when
-a marine leg crosses land; add a waypoint and rerun from `01_get_bathymetry.py`.
+a marine leg crosses land; add a waypoint and rerun from `01_get_bathymetry.py`. The 3D camera
+sits over the sea on the transect's seaward bearing by default (`camera.azimuth_deg: auto`,
+snapped to a plate edge), with the sun tied to it; a transect can override camera, exaggeration
+and water settings, as `psatha` does for its mountain-walled bay.
 
 ## How the grid is built
 

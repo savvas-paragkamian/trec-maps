@@ -77,6 +77,11 @@ data/raw, data/derived/<t>, output/<t>
   `exaggeration * sea_exaggeration_factor` (3 x 2 = 6), land x3, both stated in the legend;
   without the factor the shelf break read as flat. The nearshore zoom uses a shorter water
   depth scale (8 m) because its bay is under 10 m deep.
+- **Sea colours**: the floor albedo is a sand-to-dark-brown ramp (like sea-floor relief models), the
+  water body a depth ramp from turquoise (0-5 m) to deep blue (160 m+, `render.water.color_stops`),
+  and the surface veil a pale blue; the floor shows through the shallows and fades under the blue
+  offshore (`max_alpha` 0.78 keeps some relief visible). Waves are long gentle swells (520-90 m,
+  slopes 0.03-0.01) with a soft ripple field; the first, shorter and steeper set was called harsh.
 - **Water surface** (`render.water_surface`, `render.water.surface`): per pixel, the ray's crossing
   of sea level inside the block is the surface point and the hit below it the floor; the floor is
   displaced a little by the wave slope (refraction), faded to the water colour by its true depth,
@@ -98,6 +103,18 @@ data/raw, data/derived/<t>, output/<t>
   3-degree AWS COG, nearest-neighbour onto the grid, legend colours softened in HSV (0.72/0.96
   for 2D as in R, 0.55/0.92 under the path tracer), water class in the sea colour. The 3D block
   uses it by default (`render.albedo.land_mode: landcover`); `hypsometric` is the fallback.
+- **The other Athens transects** (2026-11-02): `psatha` (041-01 + TE_172), `salamina` (041-02 +
+  TE_173), `thoriko` (041-04 + TE_178, one waypoint south of the headland east of the marina),
+  `schinias` (041-05, no station within 40 km: the path continues `profile.sea_extension_m` =
+  2 km offshore along the transect bearing). The camera azimuth is `auto`: the seaward bearing of
+  the land transect (inland -> shoreline), snapped to 90° so the front wall is a plate edge
+  (Anavyssos, Thoriko, Schinias 180°; Salamina 0°; Psatha 270° by snapping, overridden to 295°
+  with exaggeration 1.5 and a higher camera because 576 m peaks wall the bay). The sun follows
+  the camera (`offset_from_camera_deg` -55). The camera distance also fits the plate's depth and
+  the block's height (`fill_vertical`), which deep plates like Salamina's needed.
+- **TE_178 depth**: the site export says 22 m (sounder 22-35 m) but EMODnet has 76 m at the site
+  position; the labels show both (`profile.floor_label`) whenever they differ by more than 25%.
+  `check_profile` ignores the first 50 m off the shoreline (beach cells in a 30 m DEM).
 - **Nearshore zoom** (`anavyssos_nearshore`): 041-03 + TE_176 only, 5 m cells, smaller margins,
   camera 160°/45°, exaggeration 3, as per-transect overrides in `transects.yml`.
 - **Sea floor where EMODnet is silent** (the shallow bay, about 12 000 cells in the zoom):
@@ -143,6 +160,13 @@ data/raw, data/derived/<t>, output/<t>
   must clear the front wall, hence `fill` 0.84 and `target_shift_north_frac` -0.10 for the main
   block (negative lifts the block in the frame). At a low camera the front wall is tall in the
   frame; check the axis labels at the left edge and the legend row after any camera change.
+- `make_camera` target shifts are camera-relative ("north" = away from the camera, "east" = to its
+  right); a sign slip here dropped the block onto the legend once. The vertical axis stands at the
+  block corner nearest the camera, moved towards it and to the viewer's left (`front_left_corner`),
+  so its labels stay on the background for diagonal views too; the sea-level line follows the edge
+  nearest the camera (`front_edge`).
+- Shallow sandy floors mixed with turquoise read grey-beige until the water tint was made stronger
+  in the first metres (`depth_scale_m` 8, `max_alpha` 0.85).
 - Dropbox: `PYTHONDONTWRITEBYTECODE=1` in the Makefile, `*conflicted copy*` ignored, no venv here.
 - Timings (M1 Max): preview 1600x900 x 6 frames about 1 s; final 3840x2160 x 64 frames about 12 s (plus a few seconds for the page).
 
@@ -218,3 +242,24 @@ now it is more like a 2d map."
 Done: camera from the south at 20° (zoom 22°) instead of 38°, fill and target shift retuned so the
 axis and the legend clear the taller front wall, the soil-transect label moved above the inland-most
 position. Both `block_final` re-rendered.
+
+### 2026-11-02 — sea colours
+
+Request: "the waves are harch, make them a lot more smouth and add a slight blueish color to the sea.
+make the seacolor from tirquaz to deep blue based on depth and the seaflor dark brown like the 3d
+models of seafloor."
+
+Done: brown sea-floor albedo, depth-ramped water colour (`color_stops`), bluish surface veil, long
+smooth swells with a softer ripple field; both `block_final` re-rendered (the floor colour is baked
+into the render).
+
+### 2026-11-02 — the other Athens transects
+
+Request: "move to the other Athens transects like anavyssos"
+
+Done: `psatha`, `salamina`, `thoriko`, `schinias` in `transects.yml`; `sea_extension_m` for a
+transect without a station; auto camera azimuth from the land transect with a tied sun and a
+distance that fits the plate's depth; the axis and the sea-level line placed by azimuth; the
+recorded-vs-EMODnet depth note in the labels; the Thoriko waypoint; stronger shallow-water tint.
+Downloads: GLO-30 tiles N38E023, N37E024, N38E024; EMODnet and WorldCover windows per transect.
+All six transects have profile, schematic and block figures.

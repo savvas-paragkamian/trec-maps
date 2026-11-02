@@ -33,18 +33,28 @@ def compass_unit(compass_deg: float) -> tuple[float, float]:
     return math.sin(a), -math.cos(a)
 
 
-def make_camera(dem_shape: tuple[int, int], cell_m: float, size_px: tuple[int, int], cfg: dict, exaggeration: float) -> dict:
-    """Pinhole camera on a compass bearing, placed so the plate's near edge spans `fill` of the frame width."""
+def make_camera(dem_shape: tuple[int, int], cell_m: float, size_px: tuple[int, int], cfg: dict, exaggeration: float,
+                y_range: float = 0.0) -> dict:
+    """Pinhole camera on a compass bearing, placed so the plate's near edge spans `fill` of the frame width
+    and its depth plus the block's height (`y_range`, world units) fit `fill_vertical` of the frame height."""
     rows, cols = dem_shape
-    plate_w, plate_d = cols * cell_m, rows * cell_m
+    ew, ns = cols * cell_m, rows * cell_m
+    az = math.radians(float(cfg["azimuth_deg"]))
+    # the plate's extent across the view (its near edge) and along it, for this azimuth
+    plate_w = abs(ew * math.cos(az)) + abs(ns * math.sin(az))
+    plate_d = abs(ew * math.sin(az)) + abs(ns * math.cos(az))
     el = math.radians(cfg["elevation_deg"])
     fov_y = math.radians(cfg["fov_y_deg"])
     aspect = size_px[0] / size_px[1]
     tan_half_x = math.tan(fov_y / 2) * aspect
     distance = (plate_w / 2) / (cfg["fill"] * tan_half_x) + (plate_d / 2) * math.cos(el)
+    apparent_h = plate_d * math.sin(el) + y_range * math.cos(el)      # the block's extent up the frame
+    distance_v = (apparent_h / 2) / (float(cfg.get("fill_vertical", 0.6)) * math.tan(fov_y / 2))
+    distance = max(distance, distance_v)
     ux, uz = compass_unit(cfg["azimuth_deg"])
-    target = (cfg.get("target_shift_east_frac", 0.0) * plate_w, cfg.get("target_lift_m", 0.0) * exaggeration,
-              -cfg.get("target_shift_north_frac", 0.0) * plate_d)
+    # target shifts: "north" means away from the camera, "east" means to the camera's right
+    away, right = cfg.get("target_shift_north_frac", 0.0) * plate_d, cfg.get("target_shift_east_frac", 0.0) * plate_w
+    target = (-ux * away + uz * right, cfg.get("target_lift_m", 0.0) * exaggeration, -uz * away - ux * right)
     horiz = distance * math.cos(el)
     origin = (target[0] + ux * horiz, target[1] + distance * math.sin(el), target[2] + uz * horiz)
     return {"model": "pinhole", "origin": origin, "look_at": target, "up": (0.0, 1.0, 0.0), "fov_y": cfg["fov_y_deg"]}
@@ -74,7 +84,8 @@ def render_plate(dem: np.ndarray, albedo_rgba: np.ndarray, *, cell_m: float, siz
     albedo_rgba = np.ascontiguousarray(albedo_rgba, dtype=np.float32)
     assert albedo_rgba.shape[:2] == dem.shape, (albedo_rgba.shape, dem.shape)
     width, height = size_px
-    camera = make_camera(dem.shape, cell_m, size_px, camera_cfg, exaggeration)
+    camera = make_camera(dem.shape, cell_m, size_px, camera_cfg, exaggeration,
+                         y_range=float(dem.max() - dem.min()) * exaggeration)
     sun_az = compass_to_engine_azimuth(sun_cfg["azimuth_deg"])
     extra = {}
     if earth_model:
@@ -213,6 +224,36 @@ def block_outline(meta: dict, pad: int) -> dict:
             "xs": (np.arange(W) + 0.5 - W / 2.0) * cell, "zs": (np.arange(H) + 0.5 - H / 2.0) * cell}
 
 
+def front_edge(meta: dict, pad: int, azimuth_deg: float) -> np.ndarray:
+    """Sea level (Y = 0) along the plate edge nearest a camera at `azimuth_deg`, world points (N, 3)."""
+    o = block_outline(meta, pad)
+    az = azimuth_deg % 360
+    if 135 <= az < 225:
+        return np.column_stack([o["xs"], np.zeros_like(o["xs"]), np.full_like(o["xs"], o["z_south"])])
+    if az >= 315 or az < 45:
+        return np.column_stack([o["xs"], np.zeros_like(o["xs"]), np.full_like(o["xs"], o["z_north"])])
+    if 45 <= az < 135:
+        return np.column_stack([np.full_like(o["zs"], o["x_east"]), np.zeros_like(o["zs"]), o["zs"]])
+    return np.column_stack([np.full_like(o["zs"], o["x_west"]), np.zeros_like(o["zs"]), o["zs"]])
+
+
+def front_left_corner(meta: dict, pad: int, azimuth_deg: float, offset_cells: float = 2.0) -> tuple[float, float]:
+    """World (X, Z) for the vertical axis: the block corner nearest the camera, moved towards the camera
+    and to the viewer's left, so the axis and its labels sit on the background in front of the block."""
+    o = block_outline(meta, pad)
+    cell = meta["cell_m"]
+    ux, uz = compass_unit(azimuth_deg)            # from the plate centre towards the camera
+    lx, lz = -uz, ux                              # the viewer's left
+    corners = [(o["x_west"], o["z_north"]), (o["x_east"], o["z_north"]), (o["x_west"], o["z_south"]), (o["x_east"], o["z_south"])]
+    # the leftmost corner in the view (ties, e.g. a camera due south, broken by nearness to the camera)
+    leftness = [round(c[0] * lx + c[1] * lz, 3) for c in corners]
+    nearness = [round(c[0] * ux + c[1] * uz, 3) for c in corners]
+    i = max(range(4), key=lambda k: (leftness[k], nearness[k]))
+    cx, cz = corners[i]
+    d = offset_cells * cell
+    return cx + lx * 1.5 * d + ux * 0.5 * d, cz + lz * 1.5 * d + uz * 0.5 * d
+
+
 def waterline(meta: dict, pad: int) -> np.ndarray:
     """Sea level (Y = 0) along the four walls, as one closed loop of world points (N, 3)."""
     o = block_outline(meta, pad)
@@ -225,11 +266,11 @@ def waterline(meta: dict, pad: int) -> np.ndarray:
 
 
 def depth_axis(meta: dict, pad: int, base_z: float, top_z: float, exaggeration: float, sea_factor: float,
-               step_land_m: float, step_sea_m: float, offset_cells: float = 2.0) -> dict:
-    """A vertical axis just outside the south-west corner: its line (2, 3) and ticks [(world point, label)]."""
-    o = block_outline(meta, pad)
+               step_land_m: float, step_sea_m: float, azimuth_deg: float = 180.0, offset_cells: float = 2.0) -> dict:
+    """A vertical axis just outside the block corner at the camera's front-left: its line (2, 3) and ticks
+    [(world point, label)]."""
     cell = meta["cell_m"]
-    x, zc = o["x_west"] - offset_cells * cell, o["z_south"] + offset_cells * cell
+    x, zc = front_left_corner(meta, pad, azimuth_deg, offset_cells)
     values = [0.0]
     v = -step_sea_m
     while v >= base_z:
@@ -314,6 +355,16 @@ def pixel_rays(camera: dict, width: int, height: int) -> np.ndarray:
     return d / np.linalg.norm(d, axis=-1, keepdims=True)
 
 
+def water_color(depth_m, cfg: dict) -> np.ndarray:
+    """Water body colour (0-255 floats, (..., 3)) for a true depth: a ramp over `color_stops`
+    ([[depth_m, '#rrggbb'], ...], turquoise to deep blue) or the single `color`."""
+    stops = cfg.get("color_stops")
+    if stops:
+        return ramp_rgb(-np.clip(np.asarray(depth_m, float), 0.0, None), [[-float(d), c] for d, c in stops]) * 255.0
+    d = np.asarray(depth_m, float)
+    return np.broadcast_to(hex_to_rgb(cfg.get("color", "#1b4f7a")) * 255.0, d.shape + (3,)).astype(np.float32)
+
+
 def water_alpha(depth_m, cfg: dict) -> np.ndarray:
     """Opacity of the water tint for a true depth below sea level (metres)."""
     d = np.clip(np.asarray(depth_m, float), 0.0, None)
@@ -342,7 +393,7 @@ def sea_legend_gradient(stops: list, lo: float, hi: float, water_cfg: dict | Non
     strip = ramp_rgb(depths, stops)
     if water_cfg and water_cfg.get("enabled", True):
         a = water_alpha(-depths, water_cfg)[:, None]
-        strip = strip * (1.0 - a) + hex_to_rgb(water_cfg.get("color", "#1b4f7a"))[None, :] * a
+        strip = strip * (1.0 - a) + water_color(-depths, water_cfg) / 255.0 * a
         S = water_cfg.get("surface") or {}
         veil = float(S.get("base_alpha", 0.16)) + float(S.get("fresnel_f0", 0.02))
         strip = strip * (1.0 - veil) + hex_to_rgb(S.get("sky_color", "#e4ebf0"))[None, :] * veil
@@ -377,7 +428,7 @@ def wave_slopes(X: np.ndarray, Z: np.ndarray, outline: dict, cfg: dict) -> tuple
         rng = np.random.default_rng(int(cfg.get("seed", 3)))
         nx = int((outline["x_east"] - outline["x_west"]) / spacing) + 4
         nz = int((outline["z_south"] - outline["z_north"]) / spacing) + 4
-        field = ndimage.gaussian_filter(rng.standard_normal((nz, nx)).astype(np.float32), 3.0)
+        field = ndimage.gaussian_filter(rng.standard_normal((nz, nx)).astype(np.float32), float(ripple.get("smooth", 3.0)))
         field /= max(float(field.std()), 1e-6)
         height = field * float(ripple["slope"]) * float(ripple.get("scale_m", 60.0)) * scale
         gz, gx = np.gradient(height, spacing)
@@ -414,7 +465,7 @@ def water_surface(rgb: np.ndarray, depth: np.ndarray, camera: dict, meta: dict, 
     depth_m = np.where(under, -y_hit / (exaggeration * sea_factor), 0.0)
 
     # the floor as seen through the water: refracted a little, then attenuated towards the water colour
-    body = hex_to_rgb(cfg.get("color", "#1b4f7a")) * 255.0
+    body = water_color(depth_m, cfg)
     sx, sz = wave_slopes(np.where(water, Xs, 0.0), np.where(water, Zs, 0.0), o, S)
     shift = float(S.get("refraction_gain", 150.0)) * w / 3840.0      # pixels per unit slope, at 3840 wide
     rows, cols = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -424,7 +475,7 @@ def water_surface(rgb: np.ndarray, depth: np.ndarray, camera: dict, meta: dict, 
     floor = np.stack([ndimage.map_coordinates(base[..., c], [r2, c2], order=1, mode="nearest") for c in range(3)], axis=-1)
     floor = np.where(water[..., None], floor, base)
     a_body = water_alpha(depth_m, cfg)[..., None]
-    seen = floor * (1.0 - a_body) + body[None, None, :] * a_body     # applies to the walls too (cross-section)
+    seen = floor * (1.0 - a_body) + body * a_body                     # applies to the walls too (cross-section)
 
     # the surface: wave normal, Fresnel, sky reflection shaded by the sun, glint
     n = np.stack([-sx, np.ones_like(sx), -sz], axis=-1)

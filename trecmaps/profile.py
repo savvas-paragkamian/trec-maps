@@ -82,13 +82,26 @@ def casts_of(value) -> list[float]:
         return []
 
 
+def floor_label(st) -> str:
+    """'sea floor 131 m', or both numbers when the grid's floor disagrees with the recorded bathymetry."""
+    rec = abs(float(st.bathymetry_m)) if not math.isnan(float(st.bathymetry_m)) else math.nan
+    grid = abs(float(st.z_grid)) if "z_grid" in st and not math.isnan(float(st.z_grid)) else math.nan
+    if math.isnan(rec) and math.isnan(grid):
+        return ""
+    if math.isnan(rec):
+        return f"sea floor {grid:.0f} m (EMODnet)"
+    if not math.isnan(grid) and abs(grid - rec) > max(5.0, 0.25 * rec):
+        return f"sea floor {rec:.0f} m recorded, {grid:.0f} m in EMODnet here"
+    return f"sea floor {rec:.0f} m"
+
+
 def check_profile(profile: pd.DataFrame, stations: pd.DataFrame) -> list[str]:
     """Sanity messages: the height at the shoreline, the grid versus the recorded bathymetry, land on marine legs."""
     msgs = [f"z at the shoreline (s = 0): {float(z_at(profile, 0.0)):.1f} m"]
     for _, st in stations.iterrows():
         rec = -abs(float(st.bathymetry_m)) if not math.isnan(float(st.bathymetry_m)) else math.nan
         msgs.append(f"{st.alias} at s = {st.s / 1000:.2f} km: grid {st.z_grid:.1f} m, recorded bathymetry {rec:.1f} m")
-    marine = profile[profile["s"] > 10.0]
+    marine = profile[profile["s"] > 50.0]          # the first 50 m off the shoreline event may still be beach in a 30 m DEM
     on_land = marine[marine["land"]]
     if len(on_land):
         runs = []
@@ -191,7 +204,7 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
             ax.plot([st.s] * len(casts), [-d for d in casts], marker="o", ms=4.5, mfc=C["station"], mec="white",
                     mew=0.6, ls="none", zorder=6)
             ax.plot(st.s, st.z_grid, marker="_", ms=9, mew=1.4, color=C["station"], ls="none", zorder=6)
-            depth_txt = f"sea floor {abs(float(st.bathymetry_m)):.0f} m" if not math.isnan(float(st.bathymetry_m)) else ""
+            depth_txt = floor_label(st)
             cast_txt = "sampled at " + ", ".join(f"{d:g}" for d in casts) + " m" if casts else ""
             label = "\n".join(t for t in (str(st.alias), str(st.station_name), depth_txt, cast_txt) if t)
             ha = _align(st.s, a, b)

@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .config import hex_to_rgb
-from .profile import casts_of
+from .profile import casts_of, floor_label
 from .render import landcover_lut
 
 MUTED = "#5d6670"
@@ -158,7 +158,7 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
                    mec=C["water_sample_edge"], mew=0.8, ls="none", zorder=6)
         ax_dn.plot(st.s, float(st.z_grid), marker="_", ms=10, mew=1.4, color=C["cast_line"], ls="none", zorder=6)
         ax_up.plot(st.s, 0.0, marker=boat, ms=22, mfc=C["boat"], mec=C["boat"], mew=0.4, ls="none", zorder=6)
-        depth_txt = f"sea floor {abs(float(st.bathymetry_m)):.0f} m" if not math.isnan(float(st.bathymetry_m)) else ""
+        depth_txt = floor_label(st)
         cast_txt = "sampled at " + ", ".join(f"{d:g}" for d in casts) + " m" if casts else ""
         label = "\n".join(t for t in (f"{st.alias}  {st.station_name}", cast_txt, depth_txt, f"n = {int(st.n_samples)}") if t)
         ha, dx = align(ax_up, st.s)
