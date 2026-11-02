@@ -10,9 +10,9 @@ nearshore zoom `anavyssos_nearshore` (the soil transect and TE_176 only, 5 m cel
 
 | output | what |
 |---|---|
-| `output/<transect>/profile.png`, `.pdf` | elevation / depth along the transect path, TREC zones, soil positions, stations with their sampling depths, a zoom of the land transect |
+| `output/<transect>/profile.png`, `.pdf` | elevation / depth along the transect path in three panels: the land transect in detail (own vertical scale), the nearshore in metres and the offshore in kilometres, with TREC zones, soil positions and the stations' sampling depths |
 | `output/<transect>/schematic.png`, `.pdf` | the TREC sampling-concept figure with real data: symmetric-log distance axis around the shoreline, ESA WorldCover along the land surface, soil and sediment tubes, water samples at their sampling depths, the inland / coastal transition / offshore band |
-| `output/<transect>/block_<quality>.png`, `.pdf` | oblique path-traced block of land (WorldCover classes) and sea floor (depth tint) with the path, the soil positions and a pin per Tara station (sea level, sampling depth, sea floor) drawn on it; vector overlay in the PDF |
+| `output/<transect>/block_<quality>.png`, `.pdf` | oblique path-traced solid block: land (WorldCover classes) and sea floor, cut walls down to a base depth, the water column tinted by depth (also on the walls), a sea-level line and a vertical axis in metres at the front corner, the path, the soil positions and a pin per Tara station (sea level, sampling depth, sea floor); vector overlay in the PDF. Depths are exaggerated twice as much as land (stated in the legend) |
 
 ## Setup
 

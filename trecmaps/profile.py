@@ -144,8 +144,8 @@ def _align(s, a, b) -> str:
 
 def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd.DataFrame, params: dict,
                  tcfg: dict, out_png, out_pdf) -> None:
-    """Two panels with a broken x axis (metres near the shore, kilometres offshore) sharing the y axis,
-    plus a zoom inset of the land transect, where the sampling positions are a few tens of metres apart."""
+    """Three panels on one distance line: the land transect in detail with its own vertical scale, then
+    the nearshore (metres) and the offshore (kilometres) panels sharing one elevation/depth axis."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -162,21 +162,27 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
     step = float(P["step_m"])
     brk = float(P["break_at_m"])
     s_min, s_max = float(s.min()), float(s.max())
-    ranges = [(s_min, brk), (brk, s_max)] if s_max > 2 * brk else [(s_min, s_max)]
+    zoom = P.get("land_zoom", {})
+    use_zoom = bool(zoom.get("enabled", True)) and len(land_samples) > 0
+    za, zb = float(zoom.get("from_m", s_min)), float(zoom.get("to_m", 120.0))
+    start = zb if use_zoom else s_min
+    ranges = [(start, brk), (brk, s_max)] if s_max > 2 * brk else [(start, s_max)]
     ylo = min(float(z.min()) * 1.12, -10.0)
-    yhi = max(float(z.max()) * 1.3, 48.0)   # headroom for the station labels under the zone labels
+    in_main = s >= start
+    z_main_max = float(z[in_main].max()) if in_main.any() else 0.0
+    yhi = max(z_main_max * 1.3, 0.3 * -ylo, 5.0)   # headroom for the station and zone labels
     yspan = yhi - ylo
 
-    fig, axes = plt.subplots(1, len(ranges), sharey=True, figsize=(F["width_in"], F["height_in"]),
-                             gridspec_kw={"width_ratios": [1.0, 1.6][:len(ranges)], "wspace": 0.03})
-    axes = np.atleast_1d(axes)
-    for k, (ax, (a, b)) in enumerate(zip(axes, ranges)):
-        m = (s >= a - 2 * step) & (s <= b + 2 * step)
-        _draw_terrain(ax, s[m], z[m], land[m], ylo, C)
-        _draw_zones(ax, P["zones"], a, b, s_min, s_max, yhi, yspan, C)
-        for _, r in land_samples.iterrows():
-            if a <= r.s <= b:
-                ax.plot(r.s, r.z, marker="v", ms=4.5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)
+    widths = ([0.9, 0.12] if use_zoom else []) + [1.0, 1.5][:len(ranges)]     # a spacer column after the detail panel
+    fig = plt.figure(figsize=(F["width_in"], F["height_in"]))
+    gs = fig.add_gridspec(1, len(widths), width_ratios=widths, wspace=0.03,
+                          left=0.06, right=0.94, bottom=0.16, top=0.86)
+    first = 2 if use_zoom else 0
+    axes = [fig.add_subplot(gs[first])]
+    for k in range(1, len(ranges)):
+        axes.append(fig.add_subplot(gs[first + k], sharey=axes[0]))
+
+    def draw_stations(ax, a, b):
         for _, st in stations.iterrows():
             if not (a <= st.s <= b):
                 continue
@@ -192,8 +198,19 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
             dx = {"left": 4, "right": -4, "center": 0}[ha]
             ax.annotate(label, (st.s, 0.0), xytext=(dx, 6), textcoords="offset points", ha=ha, va="bottom",
                         fontsize=5.8, color=C["station"], zorder=7, linespacing=1.15)
+
+    for k, (ax, (a, b)) in enumerate(zip(axes, ranges)):
+        m = (s >= a - 2 * step) & (s <= b + 2 * step)
+        _draw_terrain(ax, s[m], z[m], land[m], ylo, C)
+        _draw_zones(ax, P["zones"], a, b, s_min, s_max, yhi, yspan, C)
+        for _, r in land_samples.iterrows():
+            if a <= r.s <= b:
+                ax.plot(r.s, r.z, marker="v", ms=4.5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)
+        draw_stations(ax, a, b)
         ax.set_xlim(a, b)
         ax.set_ylim(ylo, yhi)
+        from matplotlib.ticker import MaxNLocator
+        ax.xaxis.set_major_locator(MaxNLocator(7, prune="upper" if k < len(ranges) - 1 else "lower"))
         if b <= brk * 1.001:
             ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g} m"))
         else:
@@ -201,53 +218,55 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
         ax.tick_params(labelsize=7)
         if k > 0:
             ax.spines["left"].set_visible(False)
-            ax.tick_params(left=False)
-    if len(axes) == 2:
-        d = 0.012
-        axes[0].plot((1 - d, 1 + d), (-d, d), transform=axes[0].transAxes, color=muted, clip_on=False, lw=0.8)
-        axes[1].plot((-d, d), (-d, d), transform=axes[1].transAxes, color=muted, clip_on=False, lw=0.8)
+            ax.tick_params(left=False, labelleft=False)
     axes[0].set_ylabel("Elevation (m)", fontsize=8)
     sec = axes[-1].secondary_yaxis("right", functions=(lambda v: -v, lambda v: -v))
     sec.set_ylabel("Depth (m)", fontsize=8)
     sec.tick_params(labelsize=7, colors=muted)
     sec.spines["right"].set_color(muted)
 
-    # Zoom inset of the land transect, in the empty water column of the last panel.
-    zoom = P.get("land_zoom", {})
-    if zoom.get("enabled", True) and len(land_samples):
-        za, zb = float(zoom.get("from_m", s_min)), float(zoom.get("to_m", 120.0))
+    panels = list(zip(axes, ranges))
+    if use_zoom:
+        ax0 = fig.add_subplot(gs[0])
         m = (s >= za - step) & (s <= zb + step)
         ztop = max(float(z[m].max()) * 1.6, 12.0)
         zlo = -max(6.0, 0.35 * ztop)
-        ins = axes[-1].inset_axes(zoom.get("box", [0.04, 0.40, 0.40, 0.46]))
-        _draw_terrain(ins, s[m], z[m], land[m], zlo, C)
-        _draw_zones(ins, P["zones"], za, zb, s_min, s_max, ztop, ztop - zlo, C, min_frac=0.0, fontsize=5.2, stagger=0.13)
+        _draw_terrain(ax0, s[m], z[m], land[m], zlo, C)
+        _draw_zones(ax0, P["zones"], za, zb, s_min, s_max, ztop, ztop - zlo, C, min_frac=0.0, fontsize=5.6, stagger=0.11)
         placements = [(0, 6, "center"), (5, 14, "left"), (-5, 14, "right")]
         for i, (_, r) in enumerate(land_samples.sort_values("s", ascending=False).iterrows()):
             if za <= r.s <= zb:
                 dx, dy, ha = placements[i % len(placements)]
-                ins.plot(r.s, r.z, marker="v", ms=5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)
-                ins.annotate(f"{r.zone} {r.shore_distance_m:g} m", (r.s, r.z), xytext=(dx, dy),
-                             textcoords="offset points", ha=ha, va="bottom", fontsize=5.2, color=C["sample"], zorder=7)
-        ins.set_xlim(za, zb)
-        ins.set_ylim(zlo, ztop)
-        ins.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g} m"))
-        ins.tick_params(labelsize=5.5, length=2, pad=1.5)
-        ins.set_title("land transect, zoom", fontsize=6, color=muted, pad=2, loc="left")
-        for sp in ("top", "right"):
-            ins.spines[sp].set_visible(False)
-        ins.patch.set_alpha(0.9)
+                ax0.plot(r.s, r.z, marker="v", ms=5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)
+                ax0.annotate(f"{r.zone} {r.shore_distance_m:g} m", (r.s, r.z), xytext=(dx, dy), textcoords="offset points",
+                             ha=ha, va="bottom", fontsize=5.6, color=C["sample"], zorder=7)
+        draw_stations(ax0, za, zb)
+        ax0.set_xlim(za, zb)
+        ax0.set_ylim(zlo, ztop)
+        from matplotlib.ticker import MaxNLocator
+        ax0.xaxis.set_major_locator(MaxNLocator(5))
+        ax0.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g} m"))
+        ax0.tick_params(labelsize=7)
+        ax0.set_ylabel("Elevation (m), detail scale", fontsize=8)
+        ax0.set_title("land transect (own vertical scale)", fontsize=7, color=muted, loc="left", pad=3)
+        panels.insert(0, (ax0, (za, zb)))
+
+    # axis-break marks between neighbouring panels
+    d = 0.012
+    for (left, _), (right, _) in zip(panels[:-1], panels[1:]):
+        left.plot((1 - d, 1 + d), (-d, d), transform=left.transAxes, color=muted, clip_on=False, lw=0.8)
+        right.plot((-d, d), (-d, d), transform=right.transAxes, color=muted, clip_on=False, lw=0.8)
 
     fig.supxlabel("Distance along the transect path from the shoreline (inland is negative)", fontsize=8, color=muted, y=0.055)
     fig.text(0.01, 0.975, tcfg["title"], fontsize=11, fontweight="bold", va="top", color="#20262e")
     fig.text(0.01, 0.925, tcfg.get("subtitle", ""), fontsize=7.5, va="top", color=muted)
     fig.text(0.99, 0.008, f"Land: {params['sources']['dem']['citation']}.  Sea floor: {params['sources']['bathymetry']['citation']}.",
              fontsize=5, ha="right", va="bottom", color=muted)
-    fig.subplots_adjust(left=0.06, right=0.94, bottom=0.16, top=0.86, wspace=0.03)
     fig.canvas.draw()
-    for ax, (a, b) in zip(axes, ranges):
+    for ax, (a, b) in panels:
         bb = ax.get_window_extent()
-        ve = ((b - a) / bb.width) / (yspan / bb.height)
+        y0, y1 = ax.get_ylim()
+        ve = ((b - a) / bb.width) / ((y1 - y0) / bb.height)
         ax.text(0.99, 0.02, f"vertical exaggeration x{ve:.0f}", transform=ax.transAxes, ha="right", va="bottom",
                 fontsize=5.5, color=muted)
     fig.savefig(out_png, dpi=F["dpi"])

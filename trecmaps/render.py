@@ -168,15 +168,82 @@ def legend_gradient(stops: list, lo: float, hi: float, n: int = 256) -> np.ndarr
 
 # ----------------------------------------------------------------------------- projection for overlays
 
-def grid_to_world(x, y, z, meta: dict, exaggeration: float) -> np.ndarray:
-    """Map coordinates (metres in the grid CRS) and height -> engine world coordinates (N, 3) = (X east, Y up, Z south)."""
+def world_y(z, exaggeration: float, sea_factor: float = 1.0) -> np.ndarray:
+    """Height -> engine Y: `exaggeration` on land, `exaggeration * sea_factor` below sea level (continuous at 0)."""
+    z = np.asarray(z, float)
+    return np.where(z < 0, z * exaggeration * sea_factor, z * exaggeration)
+
+
+def exaggerate_sea(z: np.ndarray, sea_factor: float) -> np.ndarray:
+    """The heightmap handed to the tracer: depths stretched by `sea_factor` (the tracer applies `exaggeration` on top)."""
+    out = np.array(z, dtype=np.float32, copy=True)
+    out[out < 0] *= float(sea_factor)
+    return np.ascontiguousarray(out)
+
+
+def pad_block(z: np.ndarray, albedo: np.ndarray, pad: int, base_z: float, cut_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Surround the heightmap with `pad` cells at `base_z`: the heightfield then drops to a base along its
+    rim, which renders as cut walls (the sea floor and the land as a solid block). The rim takes the cut colour."""
+    zp = np.pad(z, pad, mode="constant", constant_values=float(base_z)).astype(np.float32)
+    ap = np.pad(albedo, ((pad, pad), (pad, pad), (0, 0)), mode="edge")
+    ring = np.ones(zp.shape, bool)
+    ring[pad:-pad, pad:-pad] = False
+    ap[ring, :3] = srgb_to_linear(cut_rgb)
+    ap[ring, 3] = 1.0
+    return np.ascontiguousarray(zp), np.ascontiguousarray(ap)
+
+
+def grid_to_world(x, y, z, meta: dict, exaggeration: float, sea_factor: float = 1.0) -> np.ndarray:
+    """Map coordinates (metres in the grid CRS) and height -> engine world coordinates (N, 3) = (X east, Y up, Z south).
+    The plate is centred on the origin, so symmetric padding does not move the real cells."""
     cell = meta["cell_m"]
     col = (np.asarray(x, float) - meta["minx"]) / cell
     row = (meta["maxy"] - np.asarray(y, float)) / cell
     X = (col - meta["width"] / 2.0) * cell
     Z = (row - meta["height"] / 2.0) * cell
-    Y = np.asarray(z, float) * exaggeration
-    return np.column_stack([X, Y, Z])
+    return np.column_stack([X, world_y(z, exaggeration, sea_factor), Z])
+
+
+def block_outline(meta: dict, pad: int) -> dict:
+    """World X/Z of the block's outer faces (the rim's outer edge) and of the real data's edge."""
+    cell = meta["cell_m"]
+    W, H = meta["width"], meta["height"]
+    return {"x_west": -(W / 2.0 + pad) * cell, "x_east": (W / 2.0 + pad) * cell,
+            "z_north": -(H / 2.0 + pad) * cell, "z_south": (H / 2.0 + pad) * cell,
+            "xs": (np.arange(W) + 0.5 - W / 2.0) * cell, "zs": (np.arange(H) + 0.5 - H / 2.0) * cell}
+
+
+def waterline(meta: dict, pad: int) -> np.ndarray:
+    """Sea level (Y = 0) along the four walls, as one closed loop of world points (N, 3)."""
+    o = block_outline(meta, pad)
+    south = np.column_stack([o["xs"], np.zeros_like(o["xs"]), np.full_like(o["xs"], o["z_south"])])
+    east = np.column_stack([np.full_like(o["zs"], o["x_east"]), np.zeros_like(o["zs"]), o["zs"][::-1]])
+    north = np.column_stack([o["xs"][::-1], np.zeros_like(o["xs"]), np.full_like(o["xs"], o["z_north"])])
+    west = np.column_stack([np.full_like(o["zs"], o["x_west"]), np.zeros_like(o["zs"]), o["zs"]])
+    loop = np.vstack([south, east, north, west, south[:1]])
+    return loop
+
+
+def depth_axis(meta: dict, pad: int, base_z: float, top_z: float, exaggeration: float, sea_factor: float,
+               step_land_m: float, step_sea_m: float, offset_cells: float = 2.0) -> dict:
+    """A vertical axis just outside the south-west corner: its line (2, 3) and ticks [(world point, label)]."""
+    o = block_outline(meta, pad)
+    cell = meta["cell_m"]
+    x, zc = o["x_west"] - offset_cells * cell, o["z_south"] + offset_cells * cell
+    values = [0.0]
+    v = -step_sea_m
+    while v >= base_z:
+        values.append(v)
+        v -= step_sea_m
+    v = step_land_m
+    while v <= top_z:
+        values.append(v)
+        v += step_land_m
+    ticks = [(np.array([x, float(world_y(val, exaggeration, sea_factor)), zc]),
+              "0 (sea level)" if val == 0 else f"{val:+.0f}") for val in sorted(values)]
+    line = np.array([[x, float(world_y(base_z, exaggeration, sea_factor)), zc],
+                     [x, float(world_y(max(top_z, 0.0), exaggeration, sea_factor)), zc]])
+    return {"line": line, "ticks": ticks, "tick_dx": 0.8 * cell}
 
 
 def camera_basis(camera: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -221,13 +288,59 @@ def depth_kind(proj: dict, depth: np.ndarray, mask: np.ndarray | None = None) ->
     return ("dist", float(r_dist)) if abs(r_dist - 1) <= abs(r_zc - 1) else ("zc", float(r_zc))
 
 
-def visible(proj: dict, depth: np.ndarray, kind: str = "dist", rel_tol: float = 0.02) -> np.ndarray:
-    """True where the projected point is inside the frame and not behind the rendered surface."""
+def visible(proj: dict, depth: np.ndarray, kind: str = "dist", rel_tol: float = 0.02, miss_ok: bool = False) -> np.ndarray:
+    """True where the projected point is inside the frame and not behind the rendered surface.
+    `miss_ok` counts pixels where the ray hits nothing (depth NaN) as visible: points in the air."""
     h, w = depth.shape
     ix, iy = np.rint(proj["px"]).astype(int), np.rint(proj["py"]).astype(int)
     ok = proj["in_front"] & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
     out = np.zeros(len(ix), bool)
     dd = depth[iy[ok], ix[ok]]
     ref = proj[kind][ok]
-    out[ok] = np.isfinite(dd) & (ref <= dd * (1.0 + rel_tol))
+    hit = np.isfinite(dd)
+    out[ok] = np.where(hit, ref <= np.where(hit, dd, np.inf) * (1.0 + rel_tol), miss_ok)
     return out
+
+
+def pixel_rays(camera: dict, width: int, height: int) -> np.ndarray:
+    """Unit ray direction of every pixel centre, (H, W, 3): the engine's pinhole ray generation."""
+    origin, forward, right, up = camera_basis(camera)
+    half_h = math.tan(math.radians(float(camera["fov_y"])) / 2.0)
+    half_w = half_h * width / height
+    ndc_x = (np.arange(width) + 0.5) / width * 2.0 - 1.0
+    ndc_y = 1.0 - (np.arange(height) + 0.5) / height * 2.0
+    d = (ndc_x[None, :, None] * half_w * right[None, None, :] + ndc_y[:, None, None] * half_h * up[None, None, :]
+         + forward[None, None, :])
+    return d / np.linalg.norm(d, axis=-1, keepdims=True)
+
+
+def water_alpha(depth_m, cfg: dict) -> np.ndarray:
+    """Opacity of the water tint for a true depth below sea level (metres)."""
+    d = np.clip(np.asarray(depth_m, float), 0.0, None)
+    return float(cfg.get("max_alpha", 0.75)) * (1.0 - np.exp(-d / float(cfg.get("depth_scale_m", 40.0))))
+
+
+def water_tint(rgb: np.ndarray, depth: np.ndarray, camera: dict, exaggeration: float, sea_factor: float, cfg: dict) -> np.ndarray:
+    """Tint every rendered point below sea level (sea floor and cut walls alike) by its true depth, so the
+    water column reads as one blue body and its cross-section shows on the walls. Needs the depth AOV
+    (ray distance) and the camera to recover each pixel's hit point."""
+    h, w = depth.shape
+    origin = np.asarray(camera["origin"], float)
+    dirs = pixel_rays(camera, w, h)
+    hit = np.isfinite(depth)
+    y_hit = origin[1] + dirs[..., 1] * np.where(hit, depth, 0.0)
+    depth_m = np.where(hit & (y_hit < 0.0), -y_hit / (exaggeration * sea_factor), 0.0)
+    alpha = water_alpha(depth_m, cfg)
+    colour = hex_to_rgb(cfg.get("color", "#1b4f7a")) * 255.0
+    out = rgb.astype(np.float32) * (1.0 - alpha[..., None]) + colour[None, None, :] * alpha[..., None]
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+def sea_legend_gradient(stops: list, lo: float, hi: float, water_cfg: dict | None, n: int = 256) -> np.ndarray:
+    """(1, n, 3) strip of the sea floor albedo with the water tint applied, as it appears in the render."""
+    depths = np.linspace(lo, hi, n)
+    strip = ramp_rgb(depths, stops)
+    if water_cfg and water_cfg.get("enabled", True):
+        a = water_alpha(-depths, water_cfg)[:, None]
+        strip = strip * (1.0 - a) + hex_to_rgb(water_cfg.get("color", "#1b4f7a"))[None, :] * a
+    return strip[None, :, :]

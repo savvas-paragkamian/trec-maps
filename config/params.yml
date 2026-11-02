@@ -109,7 +109,19 @@ schematic:                              # the TREC sampling-concept figure drawn
     text: "#20262e"
 
 render:
-  exaggeration: 3.0                     # vertical exaggeration on top of true metres
+  exaggeration: 3.0                     # vertical exaggeration on top of true metres (land)
+  sea_exaggeration_factor: 2.0          # depths get exaggeration x this factor, so the sea floor reads as relief; stated in the legend
+  block:
+    pad_cells: 1                        # rim of cells at the base height around the grid: renders the cut walls
+    base_depth_m: null                  # base of the block; null = 25 m below the deepest cell, rounded to 50 m
+    cut_face_color: "#c9bfae"           # the walls
+    waterline_color: "#2f6fa3"          # sea level drawn along the walls
+    axis: {step_land_m: 100, step_sea_m: 50, color: "#20262e"}   # the vertical axis at the south-west corner
+  water:                                # post-process tint of everything below sea level, by true depth (from the depth buffer)
+    enabled: true
+    color: "#1b4f7a"
+    depth_scale_m: 40                   # metres below sea level for 63% of max_alpha
+    max_alpha: 0.75
   tile_px: 960                          # the grid plus one tile must stay under forge3d's 512 MiB budget
   earth_model: flat                     # the plate is ~15 km wide: no Earth curvature
   refraction_model: none                # required together with earth_model: flat
@@ -118,9 +130,9 @@ render:
     azimuth_deg: 170                    # compass bearing the camera sits at (over the sea, looking at the coast)
     elevation_deg: 38
     fov_y_deg: 21
-    fill: 0.92                          # fraction of the frame width the near plate edge spans
+    fill: 0.82                          # fraction of the frame width the near plate edge spans (room for the axis and legend)
     target_lift_m: 0
-    target_shift_north_frac: 0.0
+    target_shift_north_frac: -0.05      # look-at slightly south: lifts the block in the frame
     target_shift_east_frac: 0.0
   sun: {azimuth_deg: 125, elevation_deg: 35, intensity: 12}   # compass bearing; converted to the engine's CCW azimuth
   env_intensity: 1.7
@@ -133,7 +145,7 @@ render:
   albedo:                               # sRGB stops [height_m, colour], interpolated per channel, then linearised
     land_mode: landcover                # landcover (ESA WorldCover classes) or hypsometric (the `land` ramp)
     land: [[0, "#dcd2b6"], [10, "#cfc49e"], [50, "#b9b78b"], [150, "#a3a67a"], [400, "#8f8a6a"]]
-    sea: [[0, "#e3f1f3"], [-5, "#bfe0e6"], [-15, "#8fc6d3"], [-40, "#5fa3bb"], [-80, "#3a7ea0"], [-130, "#285d83"], [-200, "#1c4166"]]
+    sea: [[0, "#e6e0cc"], [-5, "#d9d9c6"], [-20, "#bfcbc4"], [-60, "#a3b9bd"], [-120, "#8ea9b3"], [-200, "#7f9cab"]]   # sand to grey-blue; the water tint adds the blue
     shoreline: {color: "#f6efdc", width_cells: 1}
   page:
     background: "#f7f4ee"

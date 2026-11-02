@@ -162,7 +162,8 @@ def draw_furniture(page: Page, *, title: str, subtitle: str, credits: list[str],
     if legend.get("note"):
         page.text(margin, y0 + bar_h + page.px(70), legend["note"], size=26, color=muted, va="top")
     for i, (label, kind, colour) in enumerate(legend.get("symbols", [])):
-        sx, sy = x + bar_w + page.px(140), y0 - page.px(30) + i * page.px(46)
+        # under the credits, top right: the sky is free there
+        sx, sy = W - margin - page.px(1050), margin + page.px(10) + (len(credits) + 1) * page.px(34) + i * page.px(46)
         if kind == "pin":
             page.segment(sx, sy - page.px(16), sx, sy + page.px(16), color=colour, width=3, ls=(0, (2, 2)))
             page.marker(sx, sy - page.px(16), size=12, face="white", edge=colour, edge_width=2)
@@ -172,7 +173,7 @@ def draw_furniture(page: Page, *, title: str, subtitle: str, credits: list[str],
             page.marker(sx, sy, size=16, face=colour, edge="white", shape=kind)
         page.text(sx + page.px(34), sy, label, size=26, color=text, va="center")
 
-    y = H - margin
-    for line in reversed(credits):
-        page.text(W - margin, y, line, size=24, color=muted, ha="right", va="bottom")
-        y -= page.px(34)
+    y = margin + page.px(10)
+    for line in credits:
+        page.text(W - margin, y, line, size=24, color=muted, ha="right", va="top")
+        y += page.px(34)

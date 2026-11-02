@@ -62,8 +62,17 @@ data/raw, data/derived/<t>, output/<t>
 - **3D style**: one oblique block, land hypsometric, sea floor depth-tinted, no water surface;
   path and stations are drawn after the render by projecting world points with the camera
   (vector overlay in the PDF). Camera 170°/38°, fov 21°, sun 125°/35°, exaggeration 3.
-- **2D figure**: two panels with a broken x axis at 1.5 km (metres, then kilometres), shared
-  y, a zoom inset of the land transect in the right panel, zone labels only where they fit.
+- **2D figure**: three panels on one distance line: the land transect in detail with its own
+  vertical scale (the inset it replaced overlapped the sea floor), then the nearshore (metres)
+  and the offshore (kilometres) sharing one elevation/depth axis; zone labels only where they fit.
+- **3D block as a solid**: the grid is rimmed with one cell at a base depth (`render.block`), so
+  the heightfield drops into cut walls; everything below sea level is tinted by its true depth in
+  post-processing (`render.water`, from the depth AOV and the camera), which paints the water
+  column on the walls as a cross-section; a sea-level line runs along the front wall and a
+  vertical axis in metres stands outside the south-west corner. Depths are exaggerated
+  `exaggeration * sea_exaggeration_factor` (3 x 2 = 6), land x3, both stated in the legend;
+  without the factor the shelf break read as flat. The nearshore zoom uses a shorter water
+  depth scale (8 m) because its bay is under 10 m deep.
 - **Schematic** (`schematic.py`, after the TREC "sampling concept" figure in the design PDF): one
   section on a symmetric-log distance axis (linear within 20 m of the shoreline), so the
   20-255 m soil positions and the 1.2 / 12 km stations sit side by side; two stacked axes with
@@ -106,6 +115,13 @@ data/raw, data/derived/<t>, output/<t>
   draws that marker no deeper than half the local floor depth.
 - Symlog axes: label positions near the panel edges are decided in display space after
   `fig.canvas.draw()`; zone-band labels sit at the visual midpoint, not the arithmetic one.
+- Water tint: a first version scaled by the ray's path length through water was invisible at these
+  exaggerations; depth under the hit point is what reads. `render.pixel_rays` is the inverse of
+  `world_to_pixel`, so hit points come from `origin + dir * depth`.
+- Symmetric padding keeps the real cells' world X/Z unchanged (plate centred on the origin), so the
+  overlay projection needs no offset; only Y changes with the sea factor (`render.world_y`).
+- Page furniture: credits and the symbol key sit top right (sky); the legend row at the bottom left
+  must clear the front wall, hence `fill` 0.82 and `target_shift_north_frac` -0.05 for the main block.
 - Dropbox: `PYTHONDONTWRITEBYTECODE=1` in the Makefile, `*conflicted copy*` ignored, no venv here.
 - Timings (M1 Max): preview 1600x900 x 6 frames about 1 s; final 3840x2160 x 64 frames about 12 s (plus a few seconds for the page).
 
@@ -152,3 +168,13 @@ pins with sea level, sampling depth and sea floor per Tara station in the 3D blo
 `anavyssos_nearshore` transect with per-transect overrides; the nearshore sea-floor blend and
 smoothing. Figures: `output/anavyssos/schematic`, `output/anavyssos/block_final` (land cover +
 pins), `output/anavyssos_nearshore/block_final` and `schematic`. Final renders take about 12 s.
+
+### 2026-11-02 — profile overlap, depth in the 3D block
+
+Request: "fix the profile.png ovelapping maps. Again the 3d doesnt have a z axis for depth fo the sea
+like the terrain with dem in the block_preview."
+
+Done: the land-transect zoom became the first panel of `profile.png` (own vertical scale, no
+overlap); the 3D block became a solid with cut walls, a depth-tinted water body (also on the walls),
+a sea-level line, a vertical axis in metres and twice the vertical exaggeration below sea level;
+credits and the symbol key moved to the top right. Both transects re-rendered (`block_final`).
