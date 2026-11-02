@@ -15,8 +15,7 @@ def main() -> None:
     params, tcfg = setup(args)
     log = lambda m: C.log("bathy", m)
     points, _, _ = sites.load_path(params, tcfg)
-    G = params["grid"]
-    lonlat = terrain.bbox_lonlat(terrain.metric_bbox(points, G["crs"], G["margin_m"], G["cell_m"]))
+    _, lonlat = terrain.grid_box(params["grid"], points)
     req = terrain.wcs_request(lonlat, params["sources"]["bathymetry"])
     dest = terrain.bathy_path(params, tcfg["name"])
     log(f"{req['width']} x {req['height']} native cells, bbox {', '.join(f'{v:.5f}' for v in req['bbox'])}")

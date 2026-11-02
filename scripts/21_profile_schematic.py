@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 """Draw the TREC sampling-concept schematic with the real transect data (needs 20_profile_2d.py's tables)."""
+import json
+
 import pandas as pd
 from pyproj import Transformer
 from shapely.geometry import Point
@@ -20,7 +22,8 @@ def main() -> None:
         log("profile.csv has no land cover; run 02_get_landcover.py, 10_build_grid.py --force and 20_profile_2d.py")
     water = sites.load_shoreline_water(params, tcfg["land_site"])
     if water:
-        points, _, _ = sites.load_path(params, tcfg)
+        path_file = derived / "path.json"                       # the path as 20_profile_2d.py routed it
+        points = json.loads(path_file.read_text()) if path_file.exists() else sites.load_path(params, tcfg)[0]
         crs = terrain.load_grid(derived)["meta"]["crs"]
         line, _, s0 = P.build_line(points, crs)
         x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(water["lon"], water["lat"])

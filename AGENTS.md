@@ -6,7 +6,8 @@ gotchas, and a dated log of the work (requests quoted verbatim).
 ## Purpose
 
 Python map scripts for TREC transects: land-sea profile maps from Copernicus GLO-30 (land)
-and EMODnet Bathymetry (sea), as 2D profiles and forge3d 3D blocks. Pilot: Anavyssos (041-03)
+and EMODnet Bathymetry (sea), as 2D profiles and forge3d 3D blocks, for all 114 LSI sites of
+the data exports (115 transects with the Anavyssos zoom). Pilot: Anavyssos (041-03)
 with Tara stations TE_176 and TE_177. Owner: Savvas Paragkamian (EMBL CPP fellow, TREC soil
 metagenomes); the sibling repository `trec-coastal-microbiome` (R, targets) holds the
 analysis pipeline and the per-transect 2D maps.
@@ -31,7 +32,7 @@ analysis pipeline and the per-transect 2D maps.
 ```
 config/params.yml, transects.yml     every tunable; transects by site ID
 trecmaps/config.py                   YAML loading, --set overrides, hex colours
-trecmaps/sites.py                    xlsx -> sites, land positions (shore_distance), stations (cable_out), path points
+trecmaps/sites.py                    exports (pickle-cached) -> sites, land positions (shore_distance), stations (cable_out), auto transects, path points
 trecmaps/fetch.py                    the download helper (HEAD size, .part, 404 = ocean tile) and the COG window reader
 trecmaps/schematic.py                the sampling-concept figure (symlog distance axis, two vertical scales, tubes, cones, boats)
 trecmaps/terrain.py                  grid box, GLO-30 tile names, WCS request, reprojection, land/sea merge, build_grid
@@ -132,6 +133,49 @@ data/raw, data/derived/<t>, output/<t>
   Gaussian over the sea floor (`grid.bathy_smooth_sigma_m`). Before that the nearest-neighbour
   fill produced flat terraces that the 3D render showed as shelves. This floor is modelled.
 
+- **All transects** (2026-11-02): the two exports the user named hold every LSI site (114, 20
+  countries) and every Tara station (188); the site table is derived from their `Site ...`
+  columns (no separate site export any more). `transects.yml` keeps the hand-made Athens
+  entries and an `auto` rule: every other LSI site becomes `<alias lower-cased>`, with its
+  *related* Tara stations (`Site related sites`) within 20 km, nearest first, at most two; if
+  none is that close, the nearest station within 10 km (`max_unrelated_km`; 20 km pulled
+  La Tremblade 1 to a station behind a peninsula); else no station and the 2 km offshore
+  extension (13 sites: Baie de Veys 2, Texel 2, Sylt 1, Klaipeda 1-2, Tallinn 2, Southampton
+  1-2, Ferrol 2, Porto 1, Cadiz 3, Malaga 1, Barcelona 3, La Tremblade 1). Distance beats the
+  relation because the relation is wrong in places (Barcelona 1/2 and Banyuls 1/2 list each
+  other's stations, 100 km away). `auto.overrides` tweaks a generated transect in place (wider
+  margins for 12 whose sea route left the box); an explicit entry with the same `land_site`
+  replaces it. `build_grid` rebuilds when the box changed and the get-scripts re-fetch a
+  window that falls short of it. The grid CRS is the path's UTM zone (`grid.crs: auto`); the DEM is read as a
+  window of the GLO-30 COG like WorldCover (full tiles would be gigabytes in Dropbox); the
+  WorldCover classes other than water count as land (`grid.landcover_as_land`, for polders and
+  flats under the 0.5 m threshold); samples without `shore_distance` (Galway 1 shoreline,
+  Faro 1 inland) take the zone's nominal distance; the block's exaggerations shrink when it
+  would be taller than 0.45 x the plate's shorter side (`render.max_block_height_frac`:
+  Bergen's fjord at x6 was a tower); a station without a `station_name` is titled by its
+  alias only (`profile.station_title`); the soil label moves beside its markers when a
+  station pin is close (Bergen, Roscoff 2). `make all Q=<quality>` runs every transect in
+  sequence (one GPU render at a time), `make maps T=<name>` one of them with both views.
+- **Sea routing** (`profile.route_around_land`, `profile.route_around_land` in `profile.py`): the
+  first batch had 55 transects whose straight marine legs crossed land (peninsulas, islands,
+  flats). A leg with land cells on it (ignoring the first 50 m off the shoreline) is replaced by
+  the shortest route through sea cells: Dijkstra (scipy csgraph) on the land mask reduced to
+  50 m cells and dilated by 100 m, retried without the dilation when a channel is too narrow
+  ("hugging the shore"), endpoints snapped to the nearest sea cell within 1.5 km, the route
+  simplified to a few waypoints, given up when it is longer than 5 x the straight leg or
+  leaves the grid box (then the straight leg stays and `check_profile` warns; the fix is a
+  waypoint or wider margins in `auto.overrides`). A route that follows the grid edge is
+  logged as such (Tallinn 1 got 5 km margins for it). A station-less transect whose 2 km
+  offshore leg hits land turns its bearing by up to 45°, or, with land all round (an estuary,
+  a ria: La Tremblade 1, Ferrol 1), ends on the nearest sea cell. `s` along the profile is
+  then the sailed distance; the subtitle keeps the straight distance to the station. The
+  routed path is `derived/<t>/path.json`, read by the schematic for the shoreline-water
+  position. Outcome of the batch: 45 legs routed in the default boxes, 7 more with 5 km
+  margins; still crossing land (no sea route in the box, or a channel the land masks close):
+  Baie de Veys 1 (TE_007 behind the Carentan flats), Banyuls 2, Bilbao 2 (TE_086 in the
+  Abra), Helsingor 1, Thrace 4 (a lagoon site), La Tremblade 1 (the Seudre estuary, under
+  100 m wide). Their profiles show land on the marine leg; they need hand-set waypoints.
+
 ## Gotchas
 
 - forge3d (1.44.0, Metal): `sun_azimuth_deg` is counter-clockwise (pass 360 - bearing); hard
@@ -149,7 +193,13 @@ data/raw, data/derived/<t>, output/<t>
 - GLO-30 is a surface model (buildings, trees); `grid.land_smooth_sigma_cells` can soften it.
   The DEM at the 041-03 site is 1.9 m where the site export says 7 m (the site point is on the beach).
 - xlsx exports: title in row 1, header in row 2 (`pd.read_excel(header=1)`); attribute columns
-  are JSON lists of `{attribute, value, unit}`.
+  are JSON lists of `{attribute, value, unit}`. The marine export (29 118 rows) takes 11 s to
+  parse, so `sites.read_export` caches each export as a pickle in `data/derived/_cache`
+  (invalidated by the xlsx mtime). `Site type` is `LSI` or `TARA`; the marine export's "site"
+  name is misleading, it is a sample export too. Helsingor 2 has a terrestrial sample 3 km
+  inland, so its land path is 3 km long.
+- pandas refuses `rows.loc[mask, float_col] = <empty string series>`: fill a float column with
+  `fillna(series.astype(float))`, never with a masked assignment of a mapped series.
 - `stations.csv` stores the cast depths as `d1;d2`; a one-cast station comes back from pandas as a
   float, so `profile.casts_of` accepts numbers too (the first renders had no depth markers).
 - The shoreline water samples (0-3 m) sit where the filled floor is only 0.5 m deep; the schematic
@@ -281,3 +331,16 @@ Request: "make also a version of each 3d map that has the transect from left to 
 Done: `--view side` in `30_render_3d.py` (Makefile `V=side`), `render.side_view_azimuth`,
 `render.side_overrides`, label placement beside the pin for turned views; `block_final_side`
 rendered for all six transects (Anavyssos and Thoriko: the front view, see Decisions).
+
+### 2026-11-02 — all transects
+
+Request: "based on TREC_sample_data_export-all-MetaBGT and
+TREC_site_data_export_all-sites_marine_matagenome . do the maps for all transects. one by one to
+limit gpu usage"
+
+Done: the two exports replace the three old ones (`paths`), sites derived from them, the `auto`
+transect rule (109 generated + 6 explicit), UTM grids, DEM windows, WorldCover in the land
+mask, nominal shore distances, the block-height cap, station titles, the soil-label rule,
+`make list | maps | all`. Checked by eye on Roscoff 2 (Atlantic, two stations, 90° camera) and
+Bergen 1 (fjord, 250 m deep at 600 m). Batch: `make all Q=preview` for every transect, then the
+final renders; see the next entry for the outcome.

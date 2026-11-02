@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .config import hex_to_rgb
-from .profile import casts_of, floor_label
+from .profile import casts_of, floor_label, station_title
 from .render import landcover_lut
 
 MUTED = "#5d6670"
@@ -160,7 +160,7 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
         ax_up.plot(st.s, 0.0, marker=boat, ms=22, mfc=C["boat"], mec=C["boat"], mew=0.4, ls="none", zorder=6)
         depth_txt = floor_label(st)
         cast_txt = "sampled at " + ", ".join(f"{d:g}" for d in casts) + " m" if casts else ""
-        label = "\n".join(t for t in (f"{st.alias}  {st.station_name}", cast_txt, depth_txt, f"n = {int(st.n_samples)}") if t)
+        label = "\n".join(t for t in (station_title(st), cast_txt, depth_txt, f"n = {int(st.n_samples)}") if t)
         ha, dx = align(ax_up, st.s)
         ax_up.annotate(label, (st.s, 0.0), xytext=(dx, 24), textcoords="offset points", ha=ha, va="bottom",
                        fontsize=5.8, color=C["text"], linespacing=1.15, zorder=7)

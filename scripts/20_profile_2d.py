@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 """Sample the grid along the transect path, place the samples and stations, draw the 2D profile."""
+import json
+
 from _common import C, parser, setup
 from trecmaps import profile as P, sites, terrain
 
@@ -11,6 +13,9 @@ def main() -> None:
     derived, out = C.transect_dirs(params, tcfg["name"])
     points, land, stations = sites.load_path(params, tcfg)
     grid = terrain.load_grid(derived)
+    if params["profile"].get("route_around_land"):
+        points = P.route_around_land(points, grid, params["profile"].get("route") or {}, log)
+    (derived / "path.json").write_text(json.dumps(points, indent=1))
     crs = grid["meta"]["crs"]
     line, _, s0 = P.build_line(points, crs)
     prof = P.sample_line(line, grid, s0, params["profile"]["step_m"])

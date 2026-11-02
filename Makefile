@@ -6,7 +6,7 @@ PY ?= python
 export PYTHONDONTWRITEBYTECODE = 1   # no __pycache__ churn inside Dropbox
 
 help:
-	@echo "make env | check | dem | bathy | landcover | grid | profile | schematic | render | final | pilot   (T=$(T) Q=$(Q) V=$(V): front or side)"
+	@echo "make env | check | list | dem | bathy | landcover | grid | profile | schematic | render | final | pilot | maps | all   (T=$(T) Q=$(Q) V=$(V): front or side)"
 env:
 	CONDA_CHANNEL_PRIORITY=strict conda env create -f environment.yml
 env-update:
@@ -30,4 +30,14 @@ render:
 final:
 	$(PY) scripts/30_render_3d.py --transect $(T) --quality final --view $(V)
 pilot: dem bathy landcover grid profile schematic render
-.PHONY: help env env-update check dem bathy landcover grid profile schematic render final pilot
+list:
+	$(PY) scripts/_common.py
+maps: dem bathy landcover grid profile schematic          # everything for one transect, both 3D views at Q
+	$(PY) scripts/30_render_3d.py --transect $(T) --quality $(Q) --view front
+	$(PY) scripts/30_render_3d.py --transect $(T) --quality $(Q) --view side
+all:                                                       # every transect one after the other (one render at a time)
+	@mkdir -p output; : > output/failed.txt
+	@for t in $$($(PY) scripts/_common.py | cut -d' ' -f1); do echo "=== $$t"; \
+	  $(MAKE) --no-print-directory maps T=$$t Q=$(Q) || echo "$$t" >> output/failed.txt; done
+	@echo "failed: $$(cat output/failed.txt | tr '\n' ' ')"
+.PHONY: help env env-update check dem bathy landcover grid profile schematic render final pilot list maps all

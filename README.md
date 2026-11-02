@@ -4,7 +4,9 @@ Map scripts for the TREC expedition (EMBL, *Traversing European Coastlines*): la
 **profile maps** of the sampling transects, built from a DEM on land and EMODnet bathymetry
 at sea, as 2D profiles (matplotlib) and 3D path-traced blocks (forge3d). Python only.
 
-All five Athens land transects are configured (`config/transects.yml`):
+Every TREC land-sea transect is a map: the five Athens transects are configured by hand
+(`config/transects.yml`), the other 109 LSI sites of the data exports become transects
+automatically, paired with their Tara stations (`make list` prints all 115). The Athens entries:
 
 | transect | land site | Tara station(s) |
 |---|---|---|
@@ -37,12 +39,16 @@ forge3d renders on the local GPU (Metal on Apple silicon); the 2D profile does n
 
 ## Data
 
-Put the TREC data-portal exports in `data/` (they are not committed, see `data/README.md`):
-`TREC_site_data_export_all-sites.xlsx`, `TREC_sample_data_export.xlsx` (soil and sediment
-samples) and `TREC_sample_data_athens_marine_metagenome.xlsx` (marine samples). Everything
-else is downloaded by the two get-scripts:
+Put the two TREC data-portal exports in `data/` (they are not committed, see `data/README.md`):
+`TREC_sample_data_export-all-MetaBGT.xlsx` (the soil and sediment samples of every LSI site)
+and `TREC_site_data_export_all-sites_marine_matagenome.xlsx` (the seawater samples: Tara
+stations and the LSI shoreline water). Sites, positions, shore distances, sampling depths and
+the site-to-station relations are read from them (each export is cached as a pickle under
+`data/derived/_cache`, the marine one takes 11 s to parse). Everything else is downloaded by
+the three get-scripts:
 
-- **Land:** Copernicus DEM GLO-30, 1° tiles from the AWS open-data bucket (`scripts/00_get_dem.py`).
+- **Land:** Copernicus DEM GLO-30; only the window over the grid is read from the 1° AWS
+  cloud-optimised tiles (`scripts/00_get_dem.py`).
 - **Sea floor:** EMODnet Bathymetry DTM (2024 release, 1/16 arc minute, about 115 m) through
   the WCS service, requested on its native grid for the transect's box (`scripts/01_get_bathymetry.py`).
 - **Land cover:** ESA WorldCover 2021 v200, 10 m; only the window over the grid is read from the
@@ -51,8 +57,11 @@ else is downloaded by the two get-scripts:
 ## Run
 
 ```bash
+make list                  # every transect: name, land site, stations, subtitle
 make pilot                 # dem, bathy, landcover, grid, profile, schematic, render (preview) for T=anavyssos
-make pilot T=anavyssos_nearshore
+make pilot T=roscoff_lsi_2
+make maps T=bergen_lsi_1 Q=final   # everything for one transect, both 3D views
+make all Q=preview         # every transect one after the other (one render at a time); failures in output/failed.txt
 make final                 # 3840 x 2160 block, 64 frames
 make final V=side          # the side view: the transect running left to right, land left where possible (block_final_side)
 make render Q=draft        # 2560 x 1440
@@ -64,11 +73,11 @@ Steps, each a thin script over `trecmaps/`:
 
 | step | script | writes |
 |---|---|---|
-| 0 | `00_get_dem.py` | `data/raw/dem/*.tif` (the only DEM network code; `--dry-run`, `.part` then rename, skips existing files) |
+| 0 | `00_get_dem.py` | `data/raw/dem/glo30_<transect>_<tile>.tif` (the only DEM network code; `--dry-run`, `.part` then rename, skips existing files) |
 | 1 | `01_get_bathymetry.py` | `data/raw/bathy/emodnet_mean_<transect>.tif` + `.json` (re-fetched when the grid box grows) |
 | 2 | `02_get_landcover.py` | `data/raw/landcover/worldcover_2021_<transect>_<tile>.tif` |
 | 10 | `10_build_grid.py` | `data/derived/<transect>/grid.npz`, `z.tif`, `grid.json`: DEM, bathymetry and land cover on one metric grid, merged with a land mask |
-| 20 | `20_profile_2d.py` | `profile.csv`, `land_samples.csv`, `stations.csv`, `output/<transect>/profile.png/.pdf` |
+| 20 | `20_profile_2d.py` | `path.json` (the path, marine legs routed around land), `profile.csv`, `land_samples.csv`, `stations.csv`, `output/<transect>/profile.png/.pdf` |
 | 21 | `21_profile_schematic.py` | `output/<transect>/schematic.png/.pdf` (from the step-20 tables) |
 | 30 | `30_render_3d.py` | `output/<transect>/block_<quality>[_side].png/.pdf` and a render cache for `--recompose`; `--view front` (from the sea) or `side` (transect left to right) |
 
@@ -77,28 +86,43 @@ Steps, each a thin script over `trecmaps/`:
 - `config/params.yml`: paths, sources (with the WorldCover legend), grid (CRS, cell size,
   margins, land/sea merge), profile and schematic (step, zones, figures), render (camera, sun,
   exaggeration, quality presets, colours; `albedo.land_mode` is `landcover` or `hypsometric`).
-- `config/transects.yml`: one entry per transect, by TREC site IDs only (`land_site`,
-  `marine_sites` in path order, optional `waypoints` to keep a marine leg off the beach), plus
-  optional `grid`, `profile`, `schematic` and `render` overrides merged over `params.yml`.
-  Coordinates come from the xlsx exports at run time.
+- `config/transects.yml`: explicit entries by TREC site IDs only (`land_site`, `marine_sites`
+  in path order, optional `waypoints` to keep a marine leg off the beach), plus optional
+  `grid`, `profile`, `schematic` and `render` overrides merged over `params.yml`; and the
+  `auto` rule that turns every other LSI site of the samples export into a transect named
+  after its alias (`roscoff_lsi_2`): its related Tara stations within `max_station_km`
+  (nearest first, at most `max_stations`), else the nearest station within
+  `max_unrelated_km`, else none and the profile continues `profile.sea_extension_m`
+  offshore. `auto.overrides` holds per-transect tweaks (wider `grid.margin_m` where the sea
+  route needs room). Coordinates come from the xlsx exports at run time.
 
-To add a transect, add an entry and run `make pilot T=<name>`. `20_profile_2d.py` warns when
-a marine leg crosses land; add a waypoint and rerun from `01_get_bathymetry.py`. The 3D camera
+To tune a generated transect further (waypoints, camera), add it to `auto.overrides` or copy
+it as an explicit entry with the same `land_site`. A marine leg that would cross land follows the
+shortest sea route instead (`profile.route_around_land`: Dijkstra over the land mask on a 50 m
+grid, 100 m off the shore, retried along the shore when a channel is narrower); the routed
+path is saved as `data/derived/<transect>/path.json`. `20_profile_2d.py` warns when a leg still
+crosses land, which happens when the route would leave the grid box (a station behind a
+peninsula): add a waypoint or wider `grid.margin_m` in an explicit entry and rerun from
+`01_get_bathymetry.py`. The 3D camera
 sits over the sea on the transect's seaward bearing by default (`camera.azimuth_deg: auto`,
 snapped to a plate edge), with the sun tied to it; a transect can override camera, exaggeration
 and water settings, as `psatha` does for its mountain-walled bay.
 
 ## How the grid is built
 
-The path (inland end, shoreline, waypoints, stations) is boxed with margins in EPSG:2100
-(GGRS87, metres; configurable) at 10 m cells. GLO-30 is resampled bilinearly, EMODnet
+The path (inland end, shoreline, waypoints, stations) is boxed with margins in the path's
+UTM zone (`grid.crs: auto`; the Athens figures were first made in EPSG:2100) at 10 m cells,
+coarsened when the box would exceed `grid.max_cells`. GLO-30 is resampled bilinearly, EMODnet
 cubically after its land cells are set to nodata, WorldCover by nearest neighbour. Land is
-DEM > 0.5 m (speckle removed). Sea cells take the EMODnet floor where it exists; where the
+DEM > 0.5 m (speckle removed) or any WorldCover class but water, which keeps polders and
+flats below the threshold on land. Sea cells take the EMODnet floor where it exists; where the
 115 m grid stops short of the coastline the floor slopes from −0.5 m at the shoreline down to
 the nearest known depth (distance-weighted), and a 40 m Gaussian keeps the coarse source
 cells from reading as terraces. That nearshore floor is modelled, not measured. GLO-30
 heights are above EGM2008, EMODnet depths below LAT; the Saronic tidal range is about
-0.1 m, so the offset is ignored.
+0.1 m, so the offset is ignored. In the 3D block the exaggerations (x3 land, x6 sea) shrink
+when the block would be taller than `render.max_block_height_frac` of the plate's shorter
+side, as in the fjords (Bergen: x1.25 / x2.5).
 
 ## Sources and citations
 

@@ -3,6 +3,7 @@
 Nothing here goes online. The DEM tiles and the EMODnet extract are fetched by
 scripts/00_get_dem.py and scripts/01_get_bathymetry.py; this module only decides which
 files they need (`dem_tiles_for`, `wcs_request`) and merges them (`build_grid`).
+The metric CRS is the path's UTM zone when `grid.crs` is `auto`.
 """
 from __future__ import annotations
 
@@ -28,8 +29,19 @@ SIDES = ("north", "south", "east", "west")
 
 # ----------------------------------------------------------------------------- grid definition
 
-def metric_bbox(points: list[dict], crs: str, margin, cell_m: float) -> dict:
-    """Bounding box of the path in the metric CRS plus margins, snapped outward to whole cells."""
+def utm_crs(points: list[dict]) -> str:
+    """The WGS 84 / UTM zone of the path's centre (EPSG:326xx north, 327xx south)."""
+    lon = sum(p["lon"] for p in points) / len(points)
+    lat = sum(p["lat"] for p in points) / len(points)
+    zone = int((lon + 180) // 6) + 1
+    return f"EPSG:{(32600 if lat >= 0 else 32700) + zone}"
+
+
+def metric_bbox(points: list[dict], crs: str, margin, cell_m: float, max_cells: int | None = None) -> dict:
+    """Bounding box of the path in the metric CRS plus margins, snapped outward to whole cells.
+    `crs: auto` = the path's UTM zone; above `max_cells` the cell is coarsened to a multiple of 5 m."""
+    if str(crs).lower() == "auto":
+        crs = utm_crs(points)
     tr = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
     xs, ys = tr.transform([p["lon"] for p in points], [p["lat"] for p in points])
     m = {k: float(margin.get(k, 0)) for k in SIDES} if isinstance(margin, dict) else {k: float(margin) for k in SIDES}
@@ -37,8 +49,18 @@ def metric_bbox(points: list[dict], crs: str, margin, cell_m: float) -> dict:
     maxx = math.ceil((max(xs) + m["east"]) / cell_m) * cell_m
     miny = math.floor((min(ys) - m["south"]) / cell_m) * cell_m
     maxy = math.ceil((max(ys) + m["north"]) / cell_m) * cell_m
+    width, height = int(round((maxx - minx) / cell_m)), int(round((maxy - miny) / cell_m))
+    if max_cells and width * height > max_cells:
+        coarser = math.ceil(cell_m * math.sqrt(width * height / max_cells) / 5) * 5
+        return metric_bbox(points, crs, margin, coarser)
     return {"crs": crs, "cell_m": float(cell_m), "minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy,
-            "width": int(round((maxx - minx) / cell_m)), "height": int(round((maxy - miny) / cell_m))}
+            "width": width, "height": height}
+
+
+def grid_box(G: dict, points: list[dict]) -> tuple[dict, tuple]:
+    """(metric bbox, lon/lat box) of a transect's grid from the `grid` section of params.yml."""
+    bbox = metric_bbox(points, G["crs"], G["margin_m"], G["cell_m"], G.get("max_cells"))
+    return bbox, bbox_lonlat(bbox)
 
 
 def grid_transform(bbox: dict):
@@ -94,8 +116,13 @@ def dem_tile_url(params: dict, lat_s: str, lon_s: str) -> str:
     return params["sources"]["dem"]["url"].format(lat=lat_s, lon=lon_s)
 
 
-def dem_tile_path(params: dict, lat_s: str, lon_s: str) -> Path:
-    return params["paths"]["raw_dir"] / "dem" / Path(dem_tile_url(params, lat_s, lon_s)).name
+def dem_path(params: dict, name: str, lat_s: str, lon_s: str) -> Path:
+    """The window of one GLO-30 tile over a transect's grid (scripts/00_get_dem.py reads it from the COG)."""
+    return params["paths"]["raw_dir"] / "dem" / f"glo30_{name}_{lat_s}{lon_s}.tif"
+
+
+def dem_paths(params: dict, name: str) -> list[Path]:
+    return sorted((params["paths"]["raw_dir"] / "dem").glob(f"glo30_{name}_*.tif"))
 
 
 def bathy_path(params: dict, name: str) -> Path:
@@ -113,6 +140,19 @@ def wcs_request(lonlat: tuple, cfg: dict) -> dict:
              "crs": "EPSG:4326", "bbox": ",".join(f"{v:.10f}" for v in bbox), "width": i1 - i0, "height": j1 - j0,
              "format": "GeoTIFF", "interpolation": "nearest"}
     return {"url": cfg["wcs"] + "?" + urlencode(query), "bbox": bbox, "width": i1 - i0, "height": j1 - j0}
+
+
+def tile_extent(lat_s: str, lon_s: str, size_deg: int) -> tuple[float, float, float, float]:
+    """(minlon, minlat, maxlon, maxlat) of a tile named by its south-west corner ('N37', 'E023')."""
+    lat = int(lat_s[1:]) * (1 if lat_s[0] == "N" else -1)
+    lon = int(lon_s[1:]) * (1 if lon_s[0] == "E" else -1)
+    return float(lon), float(lat), float(lon + size_deg), float(lat + size_deg)
+
+
+def window_is_short(path: Path, lonlat: tuple, extent: tuple) -> bool:
+    """Does an existing window file fall short of the box (clipped to its tile's extent)? -> fetch it again."""
+    clipped = (max(lonlat[0], extent[0]), max(lonlat[1], extent[1]), min(lonlat[2], extent[2]), min(lonlat[3], extent[3]))
+    return path.exists() and clipped[2] > clipped[0] and clipped[3] > clipped[1] and not covers(path, clipped)
 
 
 def covers(raster_path: Path, lonlat: tuple, tol_deg: float = 1e-6) -> bool:
@@ -247,18 +287,18 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
     derived = params["paths"]["derived_dir"] / name
     derived.mkdir(parents=True, exist_ok=True)
     npz, tif, meta_path = derived / "grid.npz", derived / "z.tif", derived / "grid.json"
+    bbox, lonlat = grid_box(G, points)
     if npz.exists() and meta_path.exists() and not force:
-        log(f"have {npz.relative_to(ROOT)} (use --force to rebuild)")
-        return load_grid(derived)
-
-    bbox = metric_bbox(points, G["crs"], G["margin_m"], G["cell_m"])
+        old = json.loads(meta_path.read_text())
+        if all(old.get(k) == bbox[k] for k in ("crs", "cell_m", "minx", "miny", "maxx", "maxy")):
+            log(f"have {npz.relative_to(ROOT)} (use --force to rebuild)")
+            return load_grid(derived)
+        log(f"the grid box changed ({old.get('width')} x {old.get('height')} -> {bbox['width']} x {bbox['height']} cells); rebuilding")
     log(f"grid {bbox['width']} x {bbox['height']} cells of {bbox['cell_m']:g} m in {bbox['crs']} "
         f"({bbox['width'] * bbox['height'] / 1e6:.2f} M cells)")
-    lonlat = bbox_lonlat(bbox)
-    tile_paths = [dem_tile_path(params, la, lo) for la, lo in dem_tiles_for(lonlat)]
-    present = [p for p in tile_paths if p.exists()]
+    present = dem_paths(params, name)
     if not present:
-        raise SystemExit("no DEM tiles in data/raw/dem; run scripts/00_get_dem.py first")
+        raise SystemExit(f"no DEM windows for {name} in data/raw/dem; run scripts/00_get_dem.py first")
     dem = read_dem(present, bbox, G.get("dem_resampling", "bilinear"))
     bpath = bathy_path(params, name)
     if not bpath.exists():
@@ -269,19 +309,24 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
     log(f"bathymetry raw {binfo['raw_min']:.1f}..{binfo['raw_max']:.1f} m, valid {binfo['raw_valid_fraction']:.0%}"
         + (", sign flipped" if binfo["sign_flipped"] else ""))
     land = land_mask(dem, G["land_threshold_m"], G["min_land_component_cells"])
+    lc_paths = landcover_paths(params, name)
+    landcover = read_classes(lc_paths, bbox) if lc_paths else np.zeros_like(land, dtype=np.uint8)
+    if not lc_paths:
+        log("no land cover extract (scripts/02_get_landcover.py); the land keeps the hypsometric tint")
+    elif G.get("landcover_as_land", False):
+        # WorldCover is a 10 m land/sea mask too: it keeps polders, marshes and flats below the
+        # DEM threshold on land (the Dutch, German and Danish coasts); 0 = no data, 80 = water
+        extra = np.isin(landcover, [c for c in np.unique(landcover) if c not in (0, 80)]) & ~land
+        land |= extra
+        log(f"land cover adds {int(extra.sum())} land cells under the {G['land_threshold_m']:g} m threshold")
     z, stats = merge_land_sea(dem, bathy, land, G)
     log(f"z {stats['z_min']:.1f}..{stats['z_max']:.1f} m, land {stats['land_fraction']:.0%}, "
         f"{stats['sea_cells_filled_from_neighbours']} sea cells filled from neighbours")
-
-    lc_paths = landcover_paths(params, name)
+    lc_fractions = {}
     if lc_paths:
-        landcover = read_classes(lc_paths, bbox)
         codes, counts = np.unique(landcover[land], return_counts=True)
         lc_fractions = {int(c): float(n / max(1, land.sum())) for c, n in zip(codes, counts)}
         log("land cover on land: " + ", ".join(f"{c}: {f:.0%}" for c, f in sorted(lc_fractions.items(), key=lambda kv: -kv[1])))
-    else:
-        landcover, lc_fractions = np.zeros_like(land, dtype=np.uint8), {}
-        log("no land cover extract (scripts/02_get_landcover.py); the land keeps the hypsometric tint")
 
     np.savez_compressed(npz, z=z, land=land, dem=dem, bathy=bathy, landcover=landcover)
     with rasterio.open(tif, "w", driver="GTiff", width=bbox["width"], height=bbox["height"], count=2, dtype="float32",
@@ -291,7 +336,7 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
         dst.set_band_description(1, "z_m (DEM on land, EMODnet sea floor at sea)")
         dst.set_band_description(2, "land mask")
     meta = {**bbox, "transform": list(grid_transform(bbox))[:6], "lonlat_bbox": list(lonlat),
-            "dem_tiles": [p.name for p in present], "dem_tiles_missing": [p.name for p in tile_paths if not p.exists()],
+            "dem_files": [p.name for p in present],
             "bathymetry_file": bpath.name, "bathymetry": binfo, **stats,
             "landcover_files": [p.name for p in lc_paths], "landcover_fractions_on_land": lc_fractions,
             "built": time.strftime("%Y-%m-%d %H:%M")}

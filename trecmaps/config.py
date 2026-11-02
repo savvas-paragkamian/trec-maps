@@ -25,14 +25,32 @@ def load_params(path: Path | str | None = None) -> dict:
     return params
 
 
-def load_transect(name: str, path: Path | str | None = None) -> dict:
+def _transects_doc(path: Path | str | None = None) -> dict:
     with open(Path(path) if path else TRANSECTS_FILE) as f:
-        transects = yaml.safe_load(f)["transects"]
+        return yaml.safe_load(f)
+
+
+def all_transects(params: dict, path: Path | str | None = None) -> dict[str, dict]:
+    """The explicit entries of transects.yml plus one auto entry per remaining LSI site of the exports."""
+    doc = _transects_doc(path)
+    transects = {k: dict(v) for k, v in (doc.get("transects") or {}).items()}
+    auto = doc.get("auto") or {}
+    if auto.get("enabled", True):
+        from . import sites
+        taken = {t.get("land_site") for t in transects.values()}
+        for name, cfg in sites.auto_transects(params, auto, taken).items():
+            deep_update(cfg, (auto.get("overrides") or {}).get(name) or {})
+            transects.setdefault(name, cfg)
+    for name, cfg in transects.items():
+        cfg["name"] = name
+    return transects
+
+
+def load_transect(name: str, params: dict | None = None, path: Path | str | None = None) -> dict:
+    transects = all_transects(params or load_params(), path)
     if name not in transects:
-        raise SystemExit(f"unknown transect {name!r}; known: {', '.join(transects)}")
-    cfg = dict(transects[name])
-    cfg["name"] = name
-    return cfg
+        raise SystemExit(f"unknown transect {name!r}; `make list` prints the known ones")
+    return transects[name]
 
 
 def transect_dirs(params: dict, name: str) -> tuple[Path, Path]:

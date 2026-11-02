@@ -81,6 +81,15 @@ def main() -> None:
     if base_z is None:
         base_z = math.floor((float(z.min()) - 25.0) / 50.0) * 50.0
     base_z = float(base_z)
+    cap = float(R.get("max_block_height_frac", 0) or 0)
+    if cap > 0:                                              # scale both exaggerations down when the block would be taller than
+        top = float(z[land].max()) if land.any() else 0.0    # `cap` x the plate's shorter side (deep fjords close to the shore)
+        height = exag * max(top, 0.0) + exag * sea_f * max(-base_z, 0.0)
+        limit = cap * min(meta["width"], meta["height"]) * meta["cell_m"]
+        if height > limit:
+            exag = max(1.0, round(exag * limit / height, 2))    # the sea factor (the land/sea ratio) stays
+            log(f"block {height / 1000:.1f} km tall against a {limit / cap / 1000:.1f} km plate: "
+                f"exaggeration reduced to x{exag:g} on land, x{exag * sea_f:g} at sea")
     cache = derived / f"render_{args.quality}{view_tag}{args.tag}.npz"
     cam_file = derived / f"camera_{args.quality}{view_tag}{args.tag}.json"
 
@@ -165,6 +174,7 @@ def main() -> None:
 
         page.polyline(proj["px"], proj["py"], vis, color=page_style["path"], width=5)
 
+        pins = []
         for _, st in stations.iterrows():
             casts = P.casts_of(st.cast_depths_m)
             pts = render.grid_to_world([st.x] * (2 + len(casts)), [st.y] * (2 + len(casts)),
@@ -180,8 +190,8 @@ def main() -> None:
                 page.marker(pr["px"][2 + i], pr["py"][2 + i], size=22, face=page_style["station"], edge="white")
             depth_txt = P.floor_label(st)
             cast_txt = ("sampled at " + ", ".join(f"{d:g}" for d in casts) + " m") if casts else ""
-            label = "\n".join(t for t in (f"{st.alias}  {st.station_name}", cast_txt, depth_txt,
-                                          f"{int(st.n_samples)} samples") if t)
+            label = "\n".join(t for t in (P.station_title(st), cast_txt, depth_txt, f"{int(st.n_samples)} samples") if t)
+            pins.append((sx, sy))
             if rotated:                                      # the sea is on the right: label beside the pin, on the water
                 page.text(sx + page.px(34), sy, label, size=34, color=page_style["station"], ha="left", va="center",
                           linespacing=1.15, weight="bold")
@@ -200,9 +210,10 @@ def main() -> None:
             i = int(np.argmax(np.asarray(land_samples.shore_distance_m)))   # the inland-most position
             soil_label = (f"{tcfg['land_site']} soil transect\n{len(land_samples)} positions, "
                           f"{land_samples.shore_distance_m.min():g}-{land_samples.shore_distance_m.max():g} m from the shore")
-            if rotated:                                      # the land is on the left: label beside the markers, on the land
+            crowded = any(abs(px - pr["px"][i]) < 0.25 * W and abs(py - pr["py"][i]) < 0.16 * H for px, py in pins)
+            if rotated or crowded:                           # the land is on the left (or a station pin is close by):
                 page.text(pr["px"][i] - page.px(34), pr["py"][i], soil_label, size=34, color=page_style["sample"],
-                          ha="right", va="center", linespacing=1.15, weight="bold")
+                          ha="right", va="center", linespacing=1.15, weight="bold")   # label beside the markers, on the land
             else:                                            # above the inland-most position
                 page.text(pr["px"][i], pr["py"][i] - page.px(44), soil_label, size=34, color=page_style["sample"],
                           ha="center", va="bottom", linespacing=1.15, weight="bold")

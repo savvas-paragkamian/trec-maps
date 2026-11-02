@@ -6,6 +6,29 @@
 #   waypoints     optional [lon, lat] points inserted after a site to keep a marine leg off the beach
 #   land_path     from_samples (shoreline event -> inland event) or explicit [[lon, lat], [lon, lat]]
 #   grid / profile / render   optional overrides of the same sections of params.yml (merged key by key)
+#
+# Every LSI site of the samples export that no entry below covers becomes a transect named after
+# its alias (Roscoff_LSI_1 -> roscoff_lsi_1): `python scripts/_common.py` (make list) prints them all.
+auto:
+  enabled: true
+  max_station_km: 20                  # the site's related Tara stations within this distance, nearest first
+  max_stations: 2
+  max_unrelated_km: 10                # a site without a related station that close takes the nearest station within this distance
+  overrides:                          # merged over a generated transect (same keys as an explicit entry)
+    # the sea route to the station leaves the default box (a peninsula, a bay mouth): wider margins
+    aarhus_lsi_1:       {grid: {margin_m: 5000}}
+    asko_lsi_2:         {grid: {margin_m: 5000}}
+    asko_lsi_3:         {grid: {margin_m: 5000}}
+    baie_de_veys_lsi_1: {grid: {margin_m: 5000}}
+    banyuls_lsi_2:      {grid: {margin_m: 5000}}
+    bilbao_lsi_2:       {grid: {margin_m: 5000}}
+    faro_lsi_3:         {grid: {margin_m: 5000}}
+    ferrol_lsi_1:       {grid: {margin_m: 5000}}
+    galway_lsi_4:       {grid: {margin_m: 5000}}
+    helsingor_lsi_1:    {grid: {margin_m: 5000}}
+    kotor_lsi_1:        {grid: {margin_m: 5000}}
+    thrace_lsi_4:       {grid: {margin_m: 5000}}
+    tallinn_lsi_1:      {grid: {margin_m: 5000}}   # the route round the Kopli peninsula followed the box edge
 transects:
   anavyssos:
     title: "Anavyssos"

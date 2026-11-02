@@ -2,9 +2,8 @@
 # Paths are relative to the repository root.
 
 paths:
-  sites_xlsx: data/TREC_site_data_export_all-sites.xlsx
-  samples_xlsx: data/TREC_sample_data_export.xlsx            # soil / sediment samples (land transects)
-  marine_xlsx: data/TREC_sample_data_athens_marine_metagenome.xlsx
+  samples_xlsx: data/TREC_sample_data_export-all-MetaBGT.xlsx                  # soil / sediment samples of every LSI site
+  marine_xlsx: data/TREC_site_data_export_all-sites_marine_matagenome.xlsx     # seawater samples: Tara stations and LSI shoreline water
   raw_dir: data/raw                                          # downloads (scripts/0*_get_*.py only)
   derived_dir: data/derived                                  # grids, profiles, render caches
   output_dir: output                                         # figures
@@ -48,14 +47,16 @@ sources:
     fallback_color: "#cfc6b4"           # land cells without a class
 
 grid:
-  crs: "EPSG:2100"                      # GGRS87 / Greek Grid (metres); EPSG:3035 for a pan-European run
+  crs: auto                             # the path's UTM zone (EPSG:326xx); the Athens figures were first made in EPSG:2100
   cell_m: 10
+  max_cells: 6000000                    # above this the cell is coarsened (forge3d holds about 7 M cells)
   dem_resampling: bilinear             # GLO-30 (30 m) -> grid
   bathy_resampling: cubic               # EMODnet (115 m) -> grid; nodata-aware, so land does not bleed in
   margin_m: {north: 2500, south: 1500, east: 1500, west: 1500}   # around the path's bounding box; a single number works too
   land_threshold_m: 0.5                 # DEM above this = land (GLO-30 has the sea at 0)
   sea_floor_cap_m: -0.5                 # sea cells never rise above this
   min_land_component_cells: 8           # drop DEM speckle at sea
+  landcover_as_land: true               # WorldCover classes other than water count as land too (polders, flats under the threshold)
   seam_cells: 6                         # ramp the sea floor from the cap to EMODnet over this many cells off the shoreline
   bathy_smooth_sigma_m: 40              # Gaussian on the sea floor (metres): the 115 m source cells would read as terraces
   land_smooth_sigma_cells: 0            # optional Gaussian on land (GLO-30 is a surface model: buildings, trees)
@@ -63,7 +64,10 @@ grid:
 profile:
   step_m: 5                             # sampling step along the path
   land_extension_m: 50                  # the path continues this far beyond the inland-most sample
+  nominal_shore_distance_m: {shoreline: 0, coastal: 30, transition: 100, inland: 250, terrestrial: 3000}   # for samples without shore_distance
   sea_extension_m: 2000                 # without a Tara station the path continues this far offshore along the transect bearing
+  route_around_land: true               # a marine leg that crosses land follows the shortest sea route instead (Dijkstra on the land mask)
+  route: {cell_m: 50, land_buffer_m: 100, snap_m: 1500, max_detour: 5}   # routing grid, distance kept from land, endpoint snap, give-up ratio
   break_at_m: 1500                      # broken x axis: metres up to here, kilometres beyond
   zones:                                # TREC sampling contexts, metres from the shoreline (negative = inland)
     - {name: "inland\n200-300 m", from: -300, to: -200}
@@ -112,6 +116,7 @@ schematic:                              # the TREC sampling-concept figure drawn
 render:
   exaggeration: 3.0                     # vertical exaggeration on top of true metres (land)
   sea_exaggeration_factor: 2.0          # depths get exaggeration x this factor, so the sea floor reads as relief; stated in the legend
+  max_block_height_frac: 0.45           # the exaggerations shrink when the block would be taller than this x the plate's shorter side
   block:
     pad_cells: 1                        # rim of cells at the base height around the grid: renders the cut walls
     base_depth_m: null                  # base of the block; null = 25 m below the deepest cell, rounded to 50 m

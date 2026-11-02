@@ -59,17 +59,26 @@ def read_cog_window(url: str, lonlat: tuple, dest: Path, *, dry_run: bool = Fals
         log(f"would read the window {', '.join(f'{v:.4f}' for v in lonlat)} of {url}"
             + (f" ({size / 2**20:.0f} MiB tile; only the blocks under the window travel)" if size else ""))
         return False
+    from rasterio.errors import RasterioIOError, WindowError
+
     env = rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
                        GDAL_HTTP_USERAGENT=USER_AGENT)
-    with env, rasterio.open("/vsicurl/" + url) as src:
-        window = from_bounds(*lonlat, transform=src.transform).round_offsets().round_lengths()
-        window = intersection(window, Window(0, 0, src.width, src.height))
-        if window.width <= 0 or window.height <= 0:
-            log(f"the window lies outside {Path(url).name}, skipped")
-            return False
-        data = src.read(1, window=window)
-        profile = {"driver": "GTiff", "width": data.shape[1], "height": data.shape[0], "count": 1, "dtype": data.dtype,
-                   "crs": src.crs, "transform": src.window_transform(window), "nodata": src.nodata, "compress": "deflate"}
+    try:
+        with env, rasterio.open("/vsicurl/" + url) as src:
+            window = from_bounds(*lonlat, transform=src.transform).round_offsets().round_lengths()
+            window = intersection(window, Window(0, 0, src.width, src.height))
+            if window.width <= 0 or window.height <= 0:
+                log(f"the window lies outside {Path(url).name}, skipped")
+                return False
+            data = src.read(1, window=window)
+            profile = {"driver": "GTiff", "width": data.shape[1], "height": data.shape[0], "count": 1, "dtype": data.dtype,
+                       "crs": src.crs, "transform": src.window_transform(window), "nodata": src.nodata, "compress": "deflate"}
+    except RasterioIOError:
+        log(f"no tile {Path(url).name} (an all-ocean tile is not published), skipped")
+        return False
+    except WindowError:
+        log(f"the window lies outside {Path(url).name}, skipped")
+        return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     with rasterio.open(part, "w", **profile) as dst:

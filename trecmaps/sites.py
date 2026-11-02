@@ -1,25 +1,44 @@
-"""Sites, land sample positions and marine stations from the TREC data exports.
+"""Sites, land sample positions, marine stations and auto-generated transects from the TREC data exports.
 
-The xlsx exports carry a title in row 1 and the header in row 2. The attribute
-columns ("Specific attributes", "Event specific attributes", ...) hold JSON lists of
-{"attribute", "value", "unit"} records.
+The xlsx exports carry a title in row 1 and the header in row 2. The attribute columns
+("Site specific attributes", "Event specific attributes") hold JSON lists of
+{"attribute", "value", "unit"} records. Both exports are sample tables that repeat the site
+columns ("Site ID", "Site alias", "Site latitude (DD)", ...), so the site table is derived
+from them. Each export is cached as a pickle under data/derived/_cache (parsing the marine
+export takes 11 s, reading the pickle 0.1 s).
 """
 from __future__ import annotations
 
 import json
 import math
+import re
 
+import numpy as np
 import pandas as pd
 from pyproj import Geod
 
 GEOD = Geod(ellps="WGS84")
+_MEMO: dict[str, pd.DataFrame] = {}
 
 
-def read_trec_xlsx(path) -> pd.DataFrame:
-    df = pd.read_excel(path, header=1)
-    df.columns = [str(c).strip() for c in df.columns]
-    if "Site ID" in df.columns:
-        df["Site ID"] = df["Site ID"].astype(str).str.strip()
+def read_export(params: dict, key: str) -> pd.DataFrame:
+    """`paths.<key>` as a DataFrame (header in row 2), cached as a pickle under the derived dir."""
+    path = params["paths"][key]
+    if str(path) in _MEMO:
+        return _MEMO[str(path)]
+    if not path.exists():
+        raise SystemExit(f"missing {path} (see data/README.md)")
+    cache = params["paths"]["derived_dir"] / "_cache" / f"{path.stem}.pkl"
+    if cache.exists() and cache.stat().st_mtime >= path.stat().st_mtime:
+        df = pd.read_pickle(cache)
+    else:
+        df = pd.read_excel(path, header=1)
+        df.columns = [str(c).strip() for c in df.columns]
+        if "Site ID" in df.columns:
+            df["Site ID"] = df["Site ID"].astype(str).str.strip()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        df.to_pickle(cache)
+    _MEMO[str(path)] = df
     return df
 
 
@@ -54,38 +73,51 @@ def _numeric(df: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(df[column], errors="coerce")
 
 
+def _split_ids(value) -> list[str]:
+    return [x.strip() for x in str(value).split(",") if x.strip()] if isinstance(value, str) else []
+
+
 def load_sites(params: dict) -> pd.DataFrame:
-    """One row per TREC site, indexed by site ID: alias, locality, type, lat, lon, elevation, bathymetry, station name."""
-    df = read_trec_xlsx(params["paths"]["sites_xlsx"])
-    attrs = df["Specific attributes"].map(parse_attributes) if "Specific attributes" in df.columns else [{}] * len(df)
-    attrs = pd.Series(list(attrs), index=df.index)
+    """One row per TREC site (LSI and TARA), indexed by site ID, from the site columns of both exports:
+    alias, locality, site type, country, lat, lon, elevation, bathymetry, station name, related site IDs."""
+    df = pd.concat([read_export(params, "marine_xlsx"), read_export(params, "samples_xlsx")], ignore_index=True)
+    first = df.groupby("Site ID").first()            # first non-null value per column
+    attrs = first["Site specific attributes"].map(parse_attributes)
+    related = df.groupby("Site ID")["Site related sites"].agg(
+        lambda s: sorted({x for v in s.dropna() for x in _split_ids(v)}))
     sites = pd.DataFrame({
-        "site_id": df["Site ID"],
-        "alias": df.get("Site alias", pd.Series("", index=df.index)).astype(str).str.strip(),
-        "locality": df.get("Locality", pd.Series("", index=df.index)),
-        "site_type": df.get("Site type", pd.Series("", index=df.index)),
-        "lat": _numeric(df, "Latitude (DD)"),
-        "lon": _numeric(df, "Longitude (DD)"),
+        "site_id": first.index,
+        "alias": first["Site alias"].astype(str).str.strip(),
+        "locality": first["Site locality"].astype(str).str.strip(),
+        "site_type": first["Site type"].astype(str).str.strip(),
+        "country": first["Event country"].astype(str).str.strip(),
+        "lat": pd.to_numeric(first["Site latitude (DD)"], errors="coerce"),
+        "lon": pd.to_numeric(first["Site longitude (DD)"], errors="coerce"),
         "elevation_m": attrs.map(lambda a: to_float(a.get("elevation"))),
         "bathymetry_m": attrs.map(lambda a: to_float(a.get("bathymetry"))),
         "station_name": attrs.map(lambda a: a.get("station_name")),
-    })
-    return sites.set_index("site_id", drop=False)
+        "related": related,
+    }, index=first.index)
+    return sites
 
 
 def load_land_positions(params: dict, site_id: str) -> pd.DataFrame:
     """Distinct sampling positions of a land transect, sorted by distance from the shoreline.
 
     Columns: context, zone (first word of the context), shore_distance_m, lat, lon,
-    n_samples, medium. Event coordinates are used when present, else the site's.
+    n_samples, medium. Event coordinates are used when present, else the site's. A missing
+    shore distance is replaced by the zone's nominal one (`profile.nominal_shore_distance_m`).
     """
-    df = read_trec_xlsx(params["paths"]["samples_xlsx"])
+    df = read_export(params, "samples_xlsx")
     rows = df[df["Site ID"] == site_id].copy()
     if rows.empty:
         raise SystemExit(f"no soil/sediment samples for site {site_id} in {params['paths']['samples_xlsx'].name}")
     attrs = rows["Event specific attributes"].map(parse_attributes)
     rows["shore_distance_m"] = attrs.map(lambda a: to_float(a.get("shore_distance")))
     rows["context"] = rows["Local environmental context"].astype(str).str.strip()
+    nominal = params["profile"].get("nominal_shore_distance_m") or {}
+    by_zone = rows["context"].map(lambda c: to_float(nominal.get(c.split()[0] if c else "", math.nan))).astype(float)
+    rows["shore_distance_m"] = rows["shore_distance_m"].fillna(by_zone)
     rows["lat"] = _numeric(rows, "Event latitude start (DD)").fillna(_numeric(rows, "Site latitude (DD)"))
     rows["lon"] = _numeric(rows, "Event longitude start (DD)").fillna(_numeric(rows, "Site longitude (DD)"))
     medium_col = "Environmental medium" if "Environmental medium" in rows.columns else "Sample type"
@@ -101,11 +133,11 @@ def load_land_positions(params: dict, site_id: str) -> pd.DataFrame:
 def load_marine_stations(params: dict, site_ids: list[str]) -> pd.DataFrame:
     """Tara stations in the given order: position, bathymetry, sampled depths (cable_out), sounder depths."""
     sites = load_sites(params)
-    df = read_trec_xlsx(params["paths"]["marine_xlsx"])
+    df = read_export(params, "marine_xlsx")
     records = []
     for sid in site_ids:
         if sid not in sites.index:
-            raise SystemExit(f"site {sid} is not in {params['paths']['sites_xlsx'].name}")
+            raise SystemExit(f"site {sid} is in neither export (paths.marine_xlsx, paths.samples_xlsx)")
         site = sites.loc[sid]
         rows = df[df["Site ID"] == sid]
         events = rows["Event specific attributes"].map(parse_attributes) if "Event specific attributes" in rows.columns else []
@@ -135,6 +167,46 @@ def load_marine_stations(params: dict, site_ids: list[str]) -> pd.DataFrame:
     columns = ["site_id", "alias", "station_name", "lat", "lon", "bathymetry_m", "cast_depths_m",
                "sounder_min_m", "sounder_max_m", "n_samples"]
     return pd.DataFrame(records, columns=columns)
+
+
+def auto_transects(params: dict, rules: dict, taken: set[str] = frozenset()) -> dict[str, dict]:
+    """A transect per LSI site of the samples export that no explicit entry covers (`taken` land sites).
+
+    Stations: the site's related Tara stations within `max_station_km` of it, nearest first, at most
+    `max_stations`; when none is that close, the nearest Tara station within `max_unrelated_km`; else
+    none (the profile continues `profile.sea_extension_m` offshore). Names are the site aliases in
+    lower case (Roscoff_LSI_1 -> roscoff_lsi_1); `overrides` in the auto section are merged on top.
+    """
+    sites = load_sites(params)
+    tara = sites[sites.site_type == "TARA"].dropna(subset=["lat", "lon"])
+    max_km = float(rules.get("max_station_km", 20))
+    near_km = float(rules.get("max_unrelated_km", max_km))
+    max_n = int(rules.get("max_stations", 2))
+    offshore_km = float(params["profile"].get("sea_extension_m", 0) or 0) / 1000
+    out = {}
+    for sid in sorted(set(read_export(params, "samples_xlsx")["Site ID"])):
+        if sid in taken or sid not in sites.index or sites.loc[sid, "site_type"] != "LSI":
+            continue
+        site = sites.loc[sid]
+        if not (np.isfinite(site.lat) and np.isfinite(site.lon)):
+            continue
+        n = len(tara)
+        _, _, dist = GEOD.inv(np.full(n, site.lon), np.full(n, site.lat), tara.lon.to_numpy(), tara.lat.to_numpy())
+        within = sorted((d / 1000, t) for d, t in zip(dist, tara.index) if d / 1000 <= max_km)
+        related = [(d, t) for d, t in within if t in set(site.related)]
+        chosen = (related or [(d, t) for d, t in within if d <= near_km][:1])[:max_n]
+        name = re.sub(r"[^a-z0-9]+", "_", str(site.alias).lower()).strip("_")
+        where = f"{str(site.locality).replace('_', ' ')}, {site.country}"
+        if chosen:
+            what = " and ".join(f"{tara.loc[t, 'alias']} ({d:.1f} km)" for d, t in chosen)
+            subtitle = f"TREC land-sea transect {sid} ({where}) with Tara station{'s' if len(chosen) > 1 else ''} {what}"
+        else:
+            subtitle = (f"TREC land-sea transect {sid} ({where}); no Tara station nearby, "
+                        f"the profile continues {offshore_km:g} km offshore")
+        out[name] = {"title": str(site.alias).replace("_", " "), "subtitle": subtitle, "land_site": sid,
+                     "marine_sites": [t for _, t in chosen], "waypoints": [], "land_path": "from_samples",
+                     "auto": True}
+    return out
 
 
 def extend_point(from_lonlat, to_lonlat, distance_m: float) -> tuple[float, float]:
@@ -186,8 +258,8 @@ def load_path(params: dict, tcfg: dict) -> tuple[list[dict], pd.DataFrame, pd.Da
 
 
 def load_shoreline_water(params: dict, site_id: str) -> dict | None:
-    """The land site's own shoreline water samples (marine sheet, Sample type 'shoreline'): count, depth range, position."""
-    df = read_trec_xlsx(params["paths"]["marine_xlsx"])
+    """The land site's own shoreline water samples (marine export, Sample type 'shoreline'): count, depth range, position."""
+    df = read_export(params, "marine_xlsx")
     rows = df[(df["Site ID"] == site_id)]
     if "Sample type" in rows.columns:
         rows = rows[rows["Sample type"].astype(str).str.strip().str.lower() == "shoreline"]

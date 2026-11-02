@@ -11,11 +11,14 @@ def main() -> None:
     params, tcfg = setup(args)
     log = lambda m: C.log("landcover", m)
     points, _, _ = sites.load_path(params, tcfg)
-    G = params["grid"]
-    lonlat = terrain.bbox_lonlat(terrain.metric_bbox(points, G["crs"], G["margin_m"], G["cell_m"]))
+    _, lonlat = terrain.grid_box(params["grid"], points)
+    size = int(params["sources"]["landcover"].get("tile_deg", 3))
     for lat_s, lon_s in terrain.landcover_tiles_for(params, lonlat):
-        fetch.read_cog_window(terrain.landcover_url(params, lat_s, lon_s), lonlat,
-                              terrain.landcover_path(params, tcfg["name"], lat_s, lon_s), dry_run=args.dry_run, log=log)
+        dest = terrain.landcover_path(params, tcfg["name"], lat_s, lon_s)
+        if terrain.window_is_short(dest, lonlat, terrain.tile_extent(lat_s, lon_s, size)) and not args.dry_run:
+            log(f"{dest.name} does not cover the current grid box; fetching it again")
+            dest.unlink()
+        fetch.read_cog_window(terrain.landcover_url(params, lat_s, lon_s), lonlat, dest, dry_run=args.dry_run, log=log)
 
 
 if __name__ == "__main__":

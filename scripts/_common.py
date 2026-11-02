@@ -18,5 +18,11 @@ def parser(doc: str) -> argparse.ArgumentParser:
 
 
 def setup(args) -> tuple[dict, dict]:
-    params, tcfg = C.load_params(args.params), C.load_transect(args.transect)
+    params = C.load_params(args.params)
+    tcfg = C.load_transect(args.transect, params)
     return C.apply_transect_overrides(params, tcfg), tcfg
+
+
+if __name__ == "__main__":          # `python scripts/_common.py` lists the transects (explicit, then auto)
+    for name, cfg in C.all_transects(C.load_params()).items():
+        print(f"{name:<22} {cfg['land_site']}  {' '.join(cfg.get('marine_sites') or []) or '-':<14} {cfg.get('subtitle', '')}")

@@ -24,6 +24,142 @@ def build_line(points: list[dict], crs: str) -> tuple[LineString, list[tuple[flo
     return line, xy, s0
 
 
+def route_around_land(points: list[dict], grid: dict, cfg: dict, log=print) -> list[dict]:
+    """Marine legs that cross land are replaced by the shortest route through sea cells: Dijkstra on a
+    coarse copy of the land mask (`cell_m`) dilated by `land_buffer_m`; endpoints on land (the beach, a
+    station on a flat) snap to the nearest free cell within `snap_m`. A leg keeps its straight line when
+    no route exists inside the grid or the route is longer than `max_detour` x the straight leg."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    meta, land = grid["meta"], grid["land"]
+    cell = float(meta["cell_m"])
+    f = max(1, int(round(float(cfg.get("cell_m", 50)) / cell)))
+    H, W = land.shape
+    h, w = H // f, W // f
+    coarse = land[:h * f, :w * f].reshape(h, f, w, f).any(axis=(1, 3))
+    buf = int(math.ceil(float(cfg.get("land_buffer_m", 100)) / (f * cell)))
+    tr = Transformer.from_crs("EPSG:4326", meta["crs"], always_xy=True)
+    inv = Transformer.from_crs(meta["crs"], "EPSG:4326", always_xy=True)
+    xy = [tuple(map(float, tr.transform(p["lon"], p["lat"]))) for p in points]
+    idx = np.arange(h * w).reshape(h, w)
+    snap_cells = float(cfg.get("snap_m", 1500)) / (f * cell)
+
+    def sea_graph(buffer_cells):
+        """(free mask, sparse 8-connected graph of the free cells) with the land dilated by `buffer_cells`."""
+        free = ~(ndimage.binary_dilation(coarse, iterations=buffer_cells) if buffer_cells > 0 else coarse)
+        src, dst, wts = [], [], []
+        for dr, dc, wgt in ((0, 1, 1.0), (1, 0, 1.0), (1, 1, math.sqrt(2)), (1, -1, math.sqrt(2))):
+            a = idx[0:h - dr, max(0, -dc):w - max(0, dc)]
+            b = idx[dr:h, max(0, -dc) + dc:w - max(0, dc) + dc]
+            ok = free.ravel()[a] & free.ravel()[b]
+            src += [a[ok], b[ok]]
+            dst += [b[ok], a[ok]]
+            wts += [np.full(int(ok.sum()), wgt * f * cell)] * 2
+        graph = coo_matrix((np.concatenate(wts), (np.concatenate(src), np.concatenate(dst))), shape=(h * w, h * w)).tocsr()
+        return free, graph
+
+    graphs = {}                                              # built on demand: the buffered mask first, the bare one as a retry
+
+    def cell_of(x, y):
+        r, c = xy_to_rowcol(np.array([x]), np.array([y]), meta)
+        return int(min(max(r[0] // f, 0), h - 1)), int(min(max(c[0] // f, 0), w - 1))
+
+    def snap(free, r0, c0):
+        if free[r0, c0]:
+            return r0, c0
+        free_rc = np.argwhere(free)
+        d2 = (free_rc[:, 0] - r0) ** 2 + (free_rc[:, 1] - c0) ** 2
+        k = int(np.argmin(d2))
+        return (int(free_rc[k, 0]), int(free_rc[k, 1])) if d2[k] <= snap_cells ** 2 else None
+
+    def shortest(a, b):
+        """Coarse-cell chain of the shortest sea route, or (None, reason)."""
+        reason = "no sea cell near an endpoint"
+        for buffer_cells in (buf, 0) if buf > 0 else (0,):
+            if buffer_cells not in graphs:
+                graphs[buffer_cells] = sea_graph(buffer_cells)
+            free, graph = graphs[buffer_cells]
+            s, t = snap(free, *cell_of(*a)), snap(free, *cell_of(*b))
+            if s is None or t is None:
+                continue
+            dist, pred = dijkstra(graph, indices=idx[s], return_predecessors=True)
+            if np.isfinite(dist[idx[t]]):
+                node, chain = idx[t], []
+                while node != idx[s] and node >= 0:
+                    chain.append(node)
+                    node = pred[node]
+                return list(reversed(chain)), ("" if buffer_cells == buf else "hugging the shore")
+            reason = "no sea route inside the grid"
+        return None, reason
+
+    def land_cells_on(a, b, skip_m):
+        n = max(2, int(math.hypot(b[0] - a[0], b[1] - a[1]) / cell))
+        xs, ys = np.linspace(a[0], b[0], n), np.linspace(a[1], b[1], n)
+        r, c = xy_to_rowcol(xs, ys, meta)
+        r = np.clip(np.rint(r), 0, H - 1).astype(int)
+        c = np.clip(np.rint(c), 0, W - 1).astype(int)
+        return int((land[r, c] & (np.hypot(xs - a[0], ys - a[1]) > skip_m)).sum())
+
+    shore_i = next((i for i, p in enumerate(points) if p["kind"] == "shoreline"), 0)
+    if points[-1]["kind"] == "sea" and len(points) == shore_i + 2:
+        # a transect without a station: when the offshore leg hits land, swing its bearing until it is at sea
+        a, b = xy[shore_i], xy[-1]
+        length, bearing = math.hypot(b[0] - a[0], b[1] - a[1]), math.degrees(math.atan2(b[0] - a[0], b[1] - a[1]))
+        moved = None
+        for turn in (0, 15, -15, 30, -30, 45, -45):
+            cand = (a[0] + length * math.sin(math.radians(bearing + turn)), a[1] + length * math.cos(math.radians(bearing + turn)))
+            if land_cells_on(a, cand, 50.0) == 0:
+                moved = (cand, f"offshore end turned {turn:+d} deg so the {length / 1000:g} km leg stays at sea") if turn else None
+                break
+        else:
+            # land all round (an estuary, a ria): end on the nearest sea cell and let the leg be routed to it
+            r0, c0 = cell_of(*b)
+            if coarse[r0, c0]:
+                if 0 not in graphs:
+                    graphs[0] = sea_graph(0)
+                cell_rc = snap(graphs[0][0], r0, c0)
+                if cell_rc is not None:
+                    cand = (meta["minx"] + (cell_rc[1] * f + f / 2) * cell, meta["maxy"] - (cell_rc[0] * f + f / 2) * cell)
+                    moved = (cand, f"offshore end was on land; moved {math.hypot(cand[0] - b[0], cand[1] - b[1]):.0f} m to the nearest sea cell")
+        if moved:
+            cand, why = moved
+            lon, lat = inv.transform(*cand)
+            points = points[:-1] + [{**points[-1], "lon": float(lon), "lat": float(lat)}]
+            xy = xy[:-1] + [cand]
+            log(why)
+    out = list(points[:shore_i + 1])
+    max_detour = float(cfg.get("max_detour", 2.5))
+    for i in range(shore_i, len(points) - 1):
+        a, b = xy[i], xy[i + 1]
+        leg = f"{points[i]['name']} -> {points[i + 1]['name']}"
+        straight = math.hypot(b[0] - a[0], b[1] - a[1])
+        n_land = land_cells_on(a, b, 50.0 if points[i]["kind"] == "shoreline" else 0.0)
+        route = None
+        if n_land:
+            chain, note = shortest(a, b)
+            if chain is None:
+                log(f"leg {leg}: {n_land} land cells on the straight line, {note}; kept straight")
+            else:
+                cells = [(meta["minx"] + (n % w * f + f / 2) * cell, meta["maxy"] - (n // w * f + f / 2) * cell) for n in chain]
+                line = LineString([a] + cells[:-1] + [b]).simplify(0.75 * f * cell)
+                if line.length > max_detour * straight:
+                    log(f"leg {leg}: the sea route is {line.length / 1000:.1f} km for a {straight / 1000:.1f} km leg "
+                        f"(> {max_detour:g} x); kept straight")
+                else:
+                    route = list(line.coords)[1:-1]
+                    rr, cc = np.array([n // w for n in chain]), np.array([n % w for n in chain])
+                    if (rr.min() < 2) or (cc.min() < 2) or (rr.max() > h - 3) or (cc.max() > w - 3):
+                        note = (note + ", " if note else "") + "along the grid edge: wider grid.margin_m would give a natural route"
+                    log(f"leg {leg}: {n_land} land cells on the straight line; routed through {len(route)} waypoints, "
+                        f"{line.length / 1000:.2f} km instead of {straight / 1000:.2f} km" + (f" ({note})" if note else ""))
+        for x, y in route or []:
+            lon, lat = inv.transform(x, y)
+            out.append({"name": "sea route", "lon": float(lon), "lat": float(lat), "kind": "waypoint", "routed": True})
+        out.append(points[i + 1])
+    return out
+
+
 def sample_line(line: LineString, grid: dict, s0: float, step_m: float) -> pd.DataFrame:
     """Terrain height and land flag every `step_m` along the line; `s` is 0 at the shoreline, negative inland."""
     meta = grid["meta"]
@@ -93,6 +229,13 @@ def floor_label(st) -> str:
     if not math.isnan(grid) and abs(grid - rec) > max(5.0, 0.25 * rec):
         return f"sea floor {rec:.0f} m recorded, {grid:.0f} m in EMODnet here"
     return f"sea floor {rec:.0f} m"
+
+
+def station_title(st) -> str:
+    """'TE_060  Samnanger', or just the alias when the export has no station name (or repeats the alias)."""
+    name = st.station_name if isinstance(st.station_name, str) else ""
+    name = name.strip()
+    return f"{st.alias}  {name}" if name and name.lower() not in ("nan", str(st.alias).lower()) else str(st.alias)
 
 
 def check_profile(profile: pd.DataFrame, stations: pd.DataFrame) -> list[str]:
@@ -206,7 +349,7 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
             ax.plot(st.s, st.z_grid, marker="_", ms=9, mew=1.4, color=C["station"], ls="none", zorder=6)
             depth_txt = floor_label(st)
             cast_txt = "sampled at " + ", ".join(f"{d:g}" for d in casts) + " m" if casts else ""
-            label = "\n".join(t for t in (str(st.alias), str(st.station_name), depth_txt, cast_txt) if t)
+            label = "\n".join(t for t in (station_title(st).replace("  ", "\n"), depth_txt, cast_txt) if t)
             ha = _align(st.s, a, b)
             dx = {"left": 4, "right": -4, "center": 0}[ha]
             ax.annotate(label, (st.s, 0.0), xytext=(dx, 6), textcoords="offset points", ha=ha, va="bottom",
