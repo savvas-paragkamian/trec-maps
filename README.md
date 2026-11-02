@@ -54,6 +54,7 @@ else is downloaded by the two get-scripts:
 make pilot                 # dem, bathy, landcover, grid, profile, schematic, render (preview) for T=anavyssos
 make pilot T=anavyssos_nearshore
 make final                 # 3840 x 2160 block, 64 frames
+make final V=side          # the side view: the transect running left to right, land left where possible (block_final_side)
 make render Q=draft        # 2560 x 1440
 python scripts/30_render_3d.py --quality preview --tag _try --set camera.azimuth_deg=200 exaggeration=4
 python scripts/30_render_3d.py --quality final --recompose    # reuse the render, redo the page
@@ -69,7 +70,7 @@ Steps, each a thin script over `trecmaps/`:
 | 10 | `10_build_grid.py` | `data/derived/<transect>/grid.npz`, `z.tif`, `grid.json`: DEM, bathymetry and land cover on one metric grid, merged with a land mask |
 | 20 | `20_profile_2d.py` | `profile.csv`, `land_samples.csv`, `stations.csv`, `output/<transect>/profile.png/.pdf` |
 | 21 | `21_profile_schematic.py` | `output/<transect>/schematic.png/.pdf` (from the step-20 tables) |
-| 30 | `30_render_3d.py` | `output/<transect>/block_<quality>.png/.pdf` and a render cache for `--recompose` |
+| 30 | `30_render_3d.py` | `output/<transect>/block_<quality>[_side].png/.pdf` and a render cache for `--recompose`; `--view front` (from the sea) or `side` (transect left to right) |
 
 ## Configuration
 

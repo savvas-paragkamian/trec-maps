@@ -24,26 +24,52 @@ def main() -> None:
     ap.add_argument("--recompose", action="store_true", help="reuse the cached render, redo the page only")
     ap.add_argument("--no-overlay", action="store_true", help="skip the path, station and axis overlay")
     ap.add_argument("--dpi", type=int, default=200, help="dpi of the page (changes the physical size only)")
+    ap.add_argument("--view", choices=["front", "side"], default="front",
+                    help="front: camera over the sea looking at the coast; side: camera 90 degrees round, "
+                         "land on the left and sea on the right, the transect running left to right")
     args = ap.parse_args()
     params, tcfg = setup(args)
-    R = C.apply_overrides(params["render"], args.set)
+    R = params["render"]
+    R = C.apply_overrides(R, args.set)
     log = lambda m: C.log("render", m)
     derived, out = C.transect_dirs(params, tcfg["name"])
     grid = terrain.load_grid(derived)
     meta, z, land = grid["meta"], grid["z"], grid["land"]
     camera_cfg = R["camera"]
-    if str(camera_cfg.get("azimuth_deg", "auto")).lower() == "auto":
-        # the camera sits over the sea on the transect's seaward bearing (inland -> shoreline), snapped to a plate edge
+    side = args.view == "side"
+    rotated = False
+    if side or str(camera_cfg.get("azimuth_deg", "auto")).lower() == "auto":
         from pyproj import Geod
         ls = pd.read_csv(derived / "land_samples.csv").sort_values("shore_distance_m")
         shore, inland = ls.iloc[0], ls.iloc[-1]
         bearing, _, _ = Geod(ellps="WGS84").inv(float(inland.lon), float(inland.lat), float(shore.lon), float(shore.lat))
         snap = float(camera_cfg.get("azimuth_snap_deg", 90) or 0)
-        az = (round(bearing / snap) * snap) % 360 if snap else bearing % 360
+        snapped = lambda a: (round(a / snap) * snap) % 360 if snap else a % 360
+        front_az = snapped(bearing) if str(camera_cfg.get("azimuth_deg", "auto")).lower() == "auto" \
+            else float(camera_cfg["azimuth_deg"])
+        if side:
+            # the plate-edge bearing that lays the path out left to right (land left where the geometry allows)
+            prof_path = pd.read_csv(derived / "profile.csv")
+            dx = float(prof_path.x.iloc[-1] - prof_path.x.iloc[0])
+            dz = -float(prof_path.y.iloc[-1] - prof_path.y.iloc[0])
+            if camera_cfg.get("side_azimuth_deg") is not None:
+                choice = {"azimuth_deg": float(camera_cfg["side_azimuth_deg"]), "lr": float("nan")}
+            else:
+                cands = (0.0, 90.0, 180.0, 270.0) if snap else tuple((bearing + d) % 360 for d in (0, 90, 180, 270))
+                choice = render.side_view_azimuth(dx, dz, bearing, cands)
+            az = choice["azimuth_deg"]
+            rotated = abs((az - front_az + 180) % 360 - 180) > 1
+            log(f"camera azimuth {az:.0f} deg (side view; the path runs {choice['lr']:+.2f} along the viewer's right"
+                + ("" if rotated else "; this is the front view, which already lays the transect out left to right") + ")")
+        else:
+            az = front_az
+            log(f"camera azimuth {az:.0f} deg (seaward bearing {bearing % 360:.0f} deg of the land transect)")
         camera_cfg["azimuth_deg"] = float(az)
-        log(f"camera azimuth {az:.0f} deg (seaward bearing {bearing % 360:.0f} deg of the land transect)")
+    view_tag = "_side" if side else ""
     if str(R["sun"].get("azimuth_deg", "auto")).lower() == "auto":
         R["sun"]["azimuth_deg"] = (float(camera_cfg["azimuth_deg"]) + float(R["sun"].get("offset_from_camera_deg", -55))) % 360
+    if rotated and isinstance(R.get("side_overrides"), dict):
+        C.deep_update(R, R["side_overrides"])
     q = R["quality"][args.quality]
     size, frames = (int(q["size"][0]), int(q["size"][1])), int(q["frames"])
     W, H = size
@@ -55,8 +81,8 @@ def main() -> None:
     if base_z is None:
         base_z = math.floor((float(z.min()) - 25.0) / 50.0) * 50.0
     base_z = float(base_z)
-    cache = derived / f"render_{args.quality}{args.tag}.npz"
-    cam_file = derived / f"camera_{args.quality}{args.tag}.json"
+    cache = derived / f"render_{args.quality}{view_tag}{args.tag}.npz"
+    cam_file = derived / f"camera_{args.quality}{view_tag}{args.tag}.json"
 
     if args.recompose and cache.exists():
         data = np.load(cache)
@@ -156,23 +182,30 @@ def main() -> None:
             cast_txt = ("sampled at " + ", ".join(f"{d:g}" for d in casts) + " m") if casts else ""
             label = "\n".join(t for t in (f"{st.alias}  {st.station_name}", cast_txt, depth_txt,
                                           f"{int(st.n_samples)} samples") if t)
-            if sx > 0.72 * W:   # near the right edge the land is behind the pin: label below-left, over the water
-                page.text(sx - page.px(30), sy + page.px(40), label, size=34, color=page_style["station"],
-                          ha="right", va="top", linespacing=1.15, weight="bold")
+            if rotated:                                      # the sea is on the right: label beside the pin, on the water
+                page.text(sx + page.px(34), sy, label, size=34, color=page_style["station"], ha="left", va="center",
+                          linespacing=1.15, weight="bold")
             else:
-                page.text(sx + page.px(30), sy - page.px(30), label, size=34, color=page_style["station"],
-                          va="bottom", linespacing=1.15, weight="bold")
+                ha = "right" if sx > 0.72 * W else "left"    # near the right edge: label on the water side
+                below = sy < 0.42 * H                        # a pin high in the frame: label under it, off the land behind
+                page.text(sx + page.px(30) * (1 if ha == "left" else -1), sy + page.px(40) * (1 if below else -0.75), label,
+                          size=34, color=page_style["station"], ha=ha, va="top" if below else "bottom",
+                          linespacing=1.15, weight="bold")
 
         pts = render.grid_to_world(land_samples.x, land_samples.y, land_samples.z + 1.0, meta, exag, sea_f)
         pr = project(pts)
         for i in range(len(pr["px"])):
             page.marker(pr["px"][i], pr["py"][i], size=16, face=page_style["sample"], edge="white", shape="v")
         if len(pr["px"]):
-            i = int(np.argmax(np.asarray(land_samples.shore_distance_m)))   # the inland-most position: label above it
-            page.text(pr["px"][i], pr["py"][i] - page.px(44),
-                      f"{tcfg['land_site']} soil transect\n{len(land_samples)} positions, "
-                      f"{land_samples.shore_distance_m.min():g}-{land_samples.shore_distance_m.max():g} m from the shore",
-                      size=34, color=page_style["sample"], ha="center", va="bottom", linespacing=1.15, weight="bold")
+            i = int(np.argmax(np.asarray(land_samples.shore_distance_m)))   # the inland-most position
+            soil_label = (f"{tcfg['land_site']} soil transect\n{len(land_samples)} positions, "
+                          f"{land_samples.shore_distance_m.min():g}-{land_samples.shore_distance_m.max():g} m from the shore")
+            if rotated:                                      # the land is on the left: label beside the markers, on the land
+                page.text(pr["px"][i] - page.px(34), pr["py"][i], soil_label, size=34, color=page_style["sample"],
+                          ha="right", va="center", linespacing=1.15, weight="bold")
+            else:                                            # above the inland-most position
+                page.text(pr["px"][i], pr["py"][i] - page.px(44), soil_label, size=34, color=page_style["sample"],
+                          ha="center", va="bottom", linespacing=1.15, weight="bold")
 
     lo_sea = math.floor(float(z.min()) / 25) * 25
     hi_land = max(25.0, math.ceil(float(z[land].max()) / 25) * 25) if land.any() else 25.0
@@ -200,7 +233,7 @@ def main() -> None:
                 "Samples: TREC (EMBL) data portal. Rendered with forge3d."]
     compose.draw_furniture(page, title=tcfg["title"], subtitle=tcfg.get("subtitle", ""), credits=credits,
                            legend=legend, style=page_style)
-    out_png = out / f"block_{args.quality}{args.tag}.png"
+    out_png = out / f"block_{args.quality}{view_tag}{args.tag}.png"
     page.save(out_png, out_png.with_suffix(".pdf"), title=f"{tcfg['title']} land-sea block")
     log(f"wrote {out_png} and .pdf")
 

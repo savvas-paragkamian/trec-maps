@@ -497,3 +497,27 @@ def water_surface(rgb: np.ndarray, depth: np.ndarray, camera: dict, meta: dict, 
     surface = seen * (1.0 - A) + (sky[None, None, :] * shade[..., None]) * A + 255.0 * foam[..., None]
     out = np.where(water[..., None], surface, seen)
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+def view_right(azimuth_deg: float) -> tuple[float, float]:
+    """The viewer's right in world (x, z) for a camera on a compass bearing (180 -> east, 0 -> west)."""
+    a = math.radians(azimuth_deg)
+    return -math.cos(a), -math.sin(a)
+
+
+def side_view_azimuth(path_dx: float, path_dz: float, seaward_bearing_deg: float, candidates=(0.0, 90.0, 180.0, 270.0)) -> dict:
+    """The camera bearing (one of `candidates`) that lays the transect path out left to right.
+
+    Score: how much of the path (start -> end, world dx east / dz south) runs along the viewer's right,
+    plus a bonus when it runs land -> sea (left to right as in the schematic), minus a penalty for a
+    camera on the land side of the coast (its front wall would cut the land, not the sea floor)."""
+    length = math.hypot(path_dx, path_dz) or 1.0
+    best = None
+    for az in candidates:
+        rx, rz = view_right(az)
+        lr = (path_dx * rx + path_dz * rz) / length
+        on_land_side = max(0.0, -math.cos(math.radians(seaward_bearing_deg - az)))
+        score = abs(lr) + (0.5 if lr > 0 else 0.0) - 0.6 * on_land_side
+        if best is None or score > best["score"]:
+            best = {"azimuth_deg": float(az), "lr": float(lr), "score": float(score)}
+    return best

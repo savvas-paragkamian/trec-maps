@@ -1,11 +1,12 @@
 # Run inside the conda environment:  conda activate trec-maps
 T  ?= anavyssos
 Q  ?= preview
+V  ?= front
 PY ?= python
 export PYTHONDONTWRITEBYTECODE = 1   # no __pycache__ churn inside Dropbox
 
 help:
-	@echo "make env | check | dem | bathy | landcover | grid | profile | schematic | render | final | pilot   (T=$(T) Q=$(Q))"
+	@echo "make env | check | dem | bathy | landcover | grid | profile | schematic | render | final | pilot   (T=$(T) Q=$(Q) V=$(V): front or side)"
 env:
 	CONDA_CHANNEL_PRIORITY=strict conda env create -f environment.yml
 env-update:
@@ -25,8 +26,8 @@ profile:
 schematic:
 	$(PY) scripts/21_profile_schematic.py --transect $(T)
 render:
-	$(PY) scripts/30_render_3d.py --transect $(T) --quality $(Q)
+	$(PY) scripts/30_render_3d.py --transect $(T) --quality $(Q) --view $(V)
 final:
-	$(PY) scripts/30_render_3d.py --transect $(T) --quality final
+	$(PY) scripts/30_render_3d.py --transect $(T) --quality final --view $(V)
 pilot: dem bathy landcover grid profile schematic render
 .PHONY: help env env-update check dem bathy landcover grid profile schematic render final pilot

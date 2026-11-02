@@ -112,6 +112,16 @@ data/raw, data/derived/<t>, output/<t>
   with exaggeration 1.5 and a higher camera because 576 m peaks wall the bay). The sun follows
   the camera (`offset_from_camera_deg` -55). The camera distance also fits the plate's depth and
   the block's height (`fill_vertical`), which deep plates like Salamina's needed.
+- **Side view** (`--view side`, `block_<quality>_side`): the plate-edge bearing that lays the path
+  (first point -> last point) out along the viewer's right, chosen by `render.side_view_azimuth`:
+  score = |left-to-right fraction| + 0.5 if it runs land -> sea + a penalty for a camera on the
+  land side of the coast (its front wall would cut the land, not the sea floor). A plain "turn
+  90° from the seaward bearing" sent the long axis of the east-west plates (Anavyssos, Thoriko)
+  into the depth, a tall narrow strip. Result: Psatha 0°, Salamina 90°, Schinias 270° (turned,
+  land left / sea right); Anavyssos and Thoriko 180°, their front view, which already runs
+  TE_177 -> shore and shore -> TE_178 left to right, so `block_final_side` repeats it there.
+  `render.side_overrides` and the beside-the-pin labels apply only when the view is turned.
+  `camera.side_azimuth_deg` in a transect's `render` overrides the choice.
 - **TE_178 depth**: the site export says 22 m (sounder 22-35 m) but EMODnet has 76 m at the site
   position; the labels show both (`profile.floor_label`) whenever they differ by more than 25%.
   `check_profile` ignores the first 50 m off the shoreline (beach cells in a 30 m DEM).
@@ -263,3 +273,11 @@ distance that fits the plate's depth; the axis and the sea-level line placed by 
 recorded-vs-EMODnet depth note in the labels; the Thoriko waypoint; stronger shallow-water tint.
 Downloads: GLO-30 tiles N38E023, N37E024, N38E024; EMODnet and WorldCover windows per transect.
 All six transects have profile, schematic and block figures.
+
+### 2026-11-02 — side view
+
+Request: "make also a version of each 3d map that has the transect from left to right in all transects."
+
+Done: `--view side` in `30_render_3d.py` (Makefile `V=side`), `render.side_view_azimuth`,
+`render.side_overrides`, label placement beside the pin for turned views; `block_final_side`
+rendered for all six transects (Anavyssos and Thoriko: the front view, see Decisions).

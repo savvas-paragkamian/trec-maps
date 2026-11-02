@@ -150,6 +150,8 @@ render:
     target_shift_north_frac: -0.10      # look-at towards the camera: lifts the block in the frame, clear of the legend row
     target_shift_east_frac: 0.0
   sun: {azimuth_deg: auto, offset_from_camera_deg: -55, elevation_deg: 35, intensity: 12}   # auto = camera azimuth + offset (180 -> 125)
+  side_overrides:                       # merged over this section when `--view side` turns the camera (transect left to right)
+    camera: {elevation_deg: 24, fill_vertical: 0.6, target_shift_north_frac: -0.13}
   env_intensity: 1.7
   turbidity: 1.4
   seed: 11
