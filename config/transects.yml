@@ -1,0 +1,17 @@
+# Transects are defined by TREC site IDs only; coordinates are read from the data
+# exports at run time (data/*.xlsx), so this file holds nothing that is not public.
+#
+#   land_site     the LSI land transect (soil / sediment samples with shore distances)
+#   marine_sites  Tara stations in the order the profile path visits them after the shoreline
+#   waypoints     optional [lon, lat] points inserted after a site to keep a marine leg off the beach
+#   land_path     from_samples (shoreline event -> inland event) or explicit [[lon, lat], [lon, lat]]
+transects:
+  anavyssos:
+    title: "Anavyssos"
+    subtitle: "TREC land-sea transect 041-03 (HCMR supersite) with Tara stations TE_176 and TE_177"
+    land_site: "041-03"
+    marine_sites: ["041-11", "041-12"]
+    waypoints:                          # the TE_176 -> TE_177 leg would cross the HCMR cape and the cape west of it
+      - after: "041-11"
+        points: [[23.9240, 37.7105], [23.8980, 37.7025]]
+    land_path: from_samples

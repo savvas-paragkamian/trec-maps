@@ -1,0 +1,27 @@
+# TREC data are never committed; downloads and derived grids are rebuilt by the scripts
+data/*
+!data/README.md
+output/
+*.part
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors, Claude Code
+.claude/worktrees/
+.claude/settings.local.json
+.vscode/
+.idea/
+
+# macOS, Dropbox, Office lock files
+.DS_Store
+*conflicted copy*
+~$*
+
+# Loose files in the repository root (screenshots, exports, logs)
+/*.png
+/*.jpg
+/*.pdf
+/*.log

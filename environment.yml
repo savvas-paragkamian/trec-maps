@@ -1,0 +1,37 @@
+# trec-maps: land-sea profile maps of TREC transects (DEM + EMODnet bathymetry, forge3d 3D renders).
+#
+# Free community channels only (conda-forge, bioconda, nodefaults), the same
+# convention as trec-coastal-microbiome, so the file works with Miniforge and
+# with a Miniconda whose .condarc avoids the Anaconda "defaults" channel.
+# Create the environment outside this Dropbox folder (conda's envs dir) with
+# strict channel priority:
+#
+#   CONDA_CHANNEL_PRIORITY=strict conda env create -f environment.yml
+#   conda activate trec-maps
+#   python -c "import forge3d as f3d; print(f3d.__version__, f3d.has_gpu())"   # 1.44.0 True
+#
+# After this file changes:
+#
+#   CONDA_CHANNEL_PRIORITY=strict conda env update -n trec-maps -f environment.yml --prune
+#
+# forge3d (Rust/WebGPU path tracer, Metal on macOS arm64) ships only on PyPI,
+# hence the pip section. 1.44.0 is the version verified in ~/projects/crete3d.
+name: trec-maps
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - pandas
+  - openpyxl
+  - pyyaml
+  - rasterio
+  - pyproj
+  - shapely
+  - matplotlib-base
+  - pip
+  - pip:
+      - forge3d==1.44.0

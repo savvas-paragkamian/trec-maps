@@ -1,0 +1,97 @@
+# Every path, source and tunable of trec-maps. Nothing is hard-coded in trecmaps/.
+# Paths are relative to the repository root.
+
+paths:
+  sites_xlsx: data/TREC_site_data_export_all-sites.xlsx
+  samples_xlsx: data/TREC_sample_data_export.xlsx            # soil / sediment samples (land transects)
+  marine_xlsx: data/TREC_sample_data_athens_marine_metagenome.xlsx
+  raw_dir: data/raw                                          # downloads (scripts/0*_get_*.py only)
+  derived_dir: data/derived                                  # grids, profiles, render caches
+  output_dir: output                                         # figures
+
+sources:
+  dem:
+    # Copernicus DEM GLO-30 as cloud-optimised GeoTIFFs on the AWS open-data bucket.
+    # {lat}/{lon} are the tile's south-west corner, e.g. N37 / E023 (1 x 1 degree tiles).
+    url: "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM/Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM.tif"
+    citation: "Copernicus DEM GLO-30 (ESA; produced by Airbus/DLR), 30 m, heights above EGM2008"
+  bathymetry:
+    # EMODnet Bathymetry DTM through its WCS 1.0.0 service. `emodnet:mean` is the
+    # latest DTM release (2024); the request is snapped to the native 1/16 arc-minute
+    # grid so the server resamples nothing. Depths are negative metres below LAT.
+    wcs: "https://ows.emodnet-bathymetry.eu/wcs"
+    coverage: "emodnet:mean"
+    native_deg: 0.00104166666667        # 1/960 degree = 1/16 arc minute (about 115 m)
+    margin_cells: 4                     # extra native cells around the grid's bounding box
+    citation: "EMODnet Bathymetry Consortium (2024). EMODnet Digital Bathymetry (DTM 2024). doi:10.12770/cf51df64-56f9-4a99-b1aa-36b8d7b743a1"
+
+grid:
+  crs: "EPSG:2100"                      # GGRS87 / Greek Grid (metres); EPSG:3035 for a pan-European run
+  cell_m: 10
+  dem_resampling: bilinear             # GLO-30 (30 m) -> grid
+  bathy_resampling: cubic               # EMODnet (115 m) -> grid; nodata-aware, so land does not bleed in
+  margin_m: {north: 2500, south: 1500, east: 1500, west: 1500}   # around the path's bounding box; a single number works too
+  land_threshold_m: 0.5                 # DEM above this = land (GLO-30 has the sea at 0)
+  sea_floor_cap_m: -0.5                 # sea cells never rise above this
+  min_land_component_cells: 8           # drop DEM speckle at sea
+  seam_cells: 6                         # ramp the sea floor from the cap to EMODnet over this many cells off the shoreline
+  land_smooth_sigma_cells: 0            # optional Gaussian on land (GLO-30 is a surface model: buildings, trees)
+
+profile:
+  step_m: 5                             # sampling step along the path
+  land_extension_m: 50                  # the path continues this far beyond the inland-most sample
+  break_at_m: 1500                      # broken x axis: metres up to here, kilometres beyond
+  zones:                                # TREC sampling contexts, metres from the shoreline (negative = inland)
+    - {name: "inland\n200-300 m", from: -300, to: -200}
+    - {name: "transition\n50-150 m", from: -150, to: -50}
+    - {name: "coastal\n10-50 m", from: -50, to: -10}
+    - {name: "shoreline", from: -10, to: 10}
+    - {name: "coastal waters", from: 10, to: 1000}
+    - {name: "offshore (> 1 km)", from: 1000, to: null}
+  figure: {width_in: 12.5, height_in: 5.0, dpi: 300}
+  land_zoom: {enabled: true, from_m: -320, to_m: 120, box: [0.04, 0.40, 0.40, 0.46]}   # inset of the land transect, in axes fractions of the last panel
+  colors:
+    land: "#d8cdb0"
+    ground_line: "#6b5e48"
+    sea_floor: "#9fb7c2"
+    water: "#cfe6ee"
+    sea_level: "#2f6fa3"
+    zone: "#8a5a2b"
+    station: "#c8102e"
+    sample: "#20262e"
+
+render:
+  exaggeration: 3.0                     # vertical exaggeration on top of true metres
+  tile_px: 960                          # the grid plus one tile must stay under forge3d's 512 MiB budget
+  earth_model: flat                     # the plate is ~15 km wide: no Earth curvature
+  refraction_model: none                # required together with earth_model: flat
+  albedo_sampling: bilinear
+  camera:
+    azimuth_deg: 170                    # compass bearing the camera sits at (over the sea, looking at the coast)
+    elevation_deg: 38
+    fov_y_deg: 21
+    fill: 0.92                          # fraction of the frame width the near plate edge spans
+    target_lift_m: 0
+    target_shift_north_frac: 0.0
+    target_shift_east_frac: 0.0
+  sun: {azimuth_deg: 125, elevation_deg: 35, intensity: 12}   # compass bearing; converted to the engine's CCW azimuth
+  env_intensity: 1.7
+  turbidity: 1.4
+  seed: 11
+  quality:
+    preview: {size: [1600, 900], frames: 6}
+    draft: {size: [2560, 1440], frames: 16}
+    final: {size: [3840, 2160], frames: 64}
+  albedo:                               # sRGB stops [height_m, colour], interpolated per channel, then linearised
+    land: [[0, "#dcd2b6"], [10, "#cfc49e"], [50, "#b9b78b"], [150, "#a3a67a"], [400, "#8f8a6a"]]
+    sea: [[0, "#e3f1f3"], [-5, "#bfe0e6"], [-15, "#8fc6d3"], [-40, "#5fa3bb"], [-80, "#3a7ea0"], [-130, "#285d83"], [-200, "#1c4166"]]
+    shoreline: {color: "#f6efdc", width_cells: 1}
+  page:
+    background: "#f7f4ee"
+    text: "#20262e"
+    muted: "#5d6670"
+    accent: "#8a5a2b"
+    path: "#c8102e"
+    station: "#c8102e"
+    sample: "#20262e"
+    vignette: 0.12
