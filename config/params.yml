@@ -117,22 +117,34 @@ render:
     cut_face_color: "#c9bfae"           # the walls
     waterline_color: "#2f6fa3"          # sea level drawn along the walls
     axis: {step_land_m: 100, step_sea_m: 50, color: "#20262e"}   # the vertical axis at the south-west corner
-  water:                                # post-process tint of everything below sea level, by true depth (from the depth buffer)
+  water:                                # post-processed sea: depth attenuation plus a wavy, semi-transparent surface at sea level
     enabled: true
-    color: "#1b4f7a"
+    color: "#1b4f7a"                    # body colour the floor fades to with depth
     depth_scale_m: 40                   # metres below sea level for 63% of max_alpha
     max_alpha: 0.75
+    surface:
+      sky_color: "#dde8f1"              # what the surface reflects
+      base_alpha: 0.22                  # veil of the surface itself, on top of the Fresnel term
+      fresnel_f0: 0.02
+      wave_shading: 3.5                 # gain on the wave tilt towards the sun (the visible ripples)
+      crest: 1.4                        # shading above this gets white added (wave crests)
+      crest_white: 0.3
+      refraction_gain: 120              # pixels of floor displacement per unit wave slope, at 3840 wide
+      waves: [[260, 0.050, 200], [150, 0.040, 215], [80, 0.030, 185], [40, 0.020, 240]]   # [wavelength m, slope, from-bearing]
+      ripple: {scale_m: 80, slope: 0.03}
+      wave_scale: 1.0                   # wavelengths x this (the nearshore zoom uses 0.3)
+      seed: 3
   tile_px: 960                          # the grid plus one tile must stay under forge3d's 512 MiB budget
   earth_model: flat                     # the plate is ~15 km wide: no Earth curvature
   refraction_model: none                # required together with earth_model: flat
   albedo_sampling: bilinear
-  camera:
-    azimuth_deg: 170                    # compass bearing the camera sits at (over the sea, looking at the coast)
-    elevation_deg: 38
+  camera:                               # a low view from the south: the block reads as a section, not a map
+    azimuth_deg: 180                    # compass bearing the camera sits at (over the sea, looking north at the coast)
+    elevation_deg: 20
     fov_y_deg: 21
-    fill: 0.82                          # fraction of the frame width the near plate edge spans (room for the axis and legend)
+    fill: 0.84                          # fraction of the frame width the near plate edge spans (room for the axis and legend)
     target_lift_m: 0
-    target_shift_north_frac: -0.05      # look-at slightly south: lifts the block in the frame
+    target_shift_north_frac: -0.10      # look-at slightly south: lifts the block in the frame, clear of the legend row
     target_shift_east_frac: 0.0
   sun: {azimuth_deg: 125, elevation_deg: 35, intensity: 12}   # compass bearing; converted to the engine's CCW azimuth
   env_intensity: 1.7

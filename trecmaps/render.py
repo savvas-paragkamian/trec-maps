@@ -343,4 +343,106 @@ def sea_legend_gradient(stops: list, lo: float, hi: float, water_cfg: dict | Non
     if water_cfg and water_cfg.get("enabled", True):
         a = water_alpha(-depths, water_cfg)[:, None]
         strip = strip * (1.0 - a) + hex_to_rgb(water_cfg.get("color", "#1b4f7a"))[None, :] * a
+        S = water_cfg.get("surface") or {}
+        veil = float(S.get("base_alpha", 0.16)) + float(S.get("fresnel_f0", 0.02))
+        strip = strip * (1.0 - veil) + hex_to_rgb(S.get("sky_color", "#e4ebf0"))[None, :] * veil
     return strip[None, :, :]
+
+
+# ----------------------------------------------------------------------------- water surface (post-processing)
+
+def sun_vector(sun_cfg: dict) -> np.ndarray:
+    """Unit vector towards the sun in engine axes (+X east, +Y up, +Z south) from a compass bearing and elevation."""
+    b, e = math.radians(float(sun_cfg["azimuth_deg"])), math.radians(float(sun_cfg["elevation_deg"]))
+    return np.array([math.sin(b) * math.cos(e), math.sin(e), -math.cos(b) * math.cos(e)], np.float32)
+
+
+def wave_slopes(X: np.ndarray, Z: np.ndarray, outline: dict, cfg: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Surface slopes (dh/dx, dh/dz) of a few directional swells plus a smoothed random ripple field,
+    evaluated at world (X, Z). Wavelengths in metres, scaled by `wave_scale`; amplitudes are slopes."""
+    scale = float(cfg.get("wave_scale", 1.0))
+    sx = np.zeros(X.shape, np.float32)
+    sz = np.zeros(X.shape, np.float32)
+    for i, (wavelength, slope, direction) in enumerate(cfg.get("waves", [])):
+        k = 2.0 * math.pi / (float(wavelength) * scale)
+        d = math.radians(float(direction))
+        dx, dz = math.sin(d), -math.cos(d)
+        arg = k * (X * dx + Z * dz) + 1.7 * i
+        c = (float(slope) * np.cos(arg)).astype(np.float32)
+        sx += c * dx
+        sz += c * dz
+    ripple = cfg.get("ripple") or {}
+    if ripple.get("slope", 0):
+        spacing = float(ripple.get("scale_m", 60.0)) * scale / 4.0
+        rng = np.random.default_rng(int(cfg.get("seed", 3)))
+        nx = int((outline["x_east"] - outline["x_west"]) / spacing) + 4
+        nz = int((outline["z_south"] - outline["z_north"]) / spacing) + 4
+        field = ndimage.gaussian_filter(rng.standard_normal((nz, nx)).astype(np.float32), 3.0)
+        field /= max(float(field.std()), 1e-6)
+        height = field * float(ripple["slope"]) * float(ripple.get("scale_m", 60.0)) * scale
+        gz, gx = np.gradient(height, spacing)
+        col = (X - outline["x_west"]) / spacing + 1.0
+        row = (Z - outline["z_north"]) / spacing + 1.0
+        sx += ndimage.map_coordinates(gx, [row, col], order=3, mode="nearest").astype(np.float32)
+        sz += ndimage.map_coordinates(gz, [row, col], order=3, mode="nearest").astype(np.float32)
+    return sx, sz
+
+
+def water_surface(rgb: np.ndarray, depth: np.ndarray, camera: dict, meta: dict, pad: int, exaggeration: float,
+                  sea_factor: float, sun_cfg: dict, cfg: dict) -> np.ndarray:
+    """Composite a semi-transparent, wavy sea surface at Y = 0 over everything seen through it.
+
+    Per pixel: the ray's crossing of sea level inside the block (the surface point), the hit point
+    below it (the floor, attenuated towards the water colour by its true depth and displaced a little
+    by the wave slope: refraction), a wave normal, Fresnel reflection of the sky, a sun glint. Cut
+    walls below sea level keep the depth tint only (the water column in cross-section)."""
+    h, w = depth.shape
+    S = cfg.get("surface") or {}
+    origin = np.asarray(camera["origin"], np.float32)
+    dirs = pixel_rays(camera, w, h).astype(np.float32)
+    hit = np.isfinite(depth)
+    dd = np.where(hit, depth, 0.0).astype(np.float32)
+    y_hit = origin[1] + dirs[..., 1] * dd
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t0 = np.where(dirs[..., 1] < 0, -origin[1] / dirs[..., 1], np.inf).astype(np.float32)
+    o = block_outline(meta, pad)
+    Xs = origin[0] + dirs[..., 0] * t0
+    Zs = origin[2] + dirs[..., 2] * t0
+    inside = (Xs >= o["x_west"]) & (Xs <= o["x_east"]) & (Zs >= o["z_north"]) & (Zs <= o["z_south"])
+    under = hit & (y_hit < 0.0)
+    water = under & inside & (t0 < dd)
+    depth_m = np.where(under, -y_hit / (exaggeration * sea_factor), 0.0)
+
+    # the floor as seen through the water: refracted a little, then attenuated towards the water colour
+    body = hex_to_rgb(cfg.get("color", "#1b4f7a")) * 255.0
+    sx, sz = wave_slopes(np.where(water, Xs, 0.0), np.where(water, Zs, 0.0), o, S)
+    shift = float(S.get("refraction_gain", 150.0)) * w / 3840.0      # pixels per unit slope, at 3840 wide
+    rows, cols = np.mgrid[0:h, 0:w].astype(np.float32)
+    r2 = np.clip(rows + np.where(water, sz, 0.0) * shift, 0, h - 1)
+    c2 = np.clip(cols + np.where(water, sx, 0.0) * shift, 0, w - 1)
+    base = rgb.astype(np.float32)
+    floor = np.stack([ndimage.map_coordinates(base[..., c], [r2, c2], order=1, mode="nearest") for c in range(3)], axis=-1)
+    floor = np.where(water[..., None], floor, base)
+    a_body = water_alpha(depth_m, cfg)[..., None]
+    seen = floor * (1.0 - a_body) + body[None, None, :] * a_body     # applies to the walls too (cross-section)
+
+    # the surface: wave normal, Fresnel, sky reflection shaded by the sun, glint
+    n = np.stack([-sx, np.ones_like(sx), -sz], axis=-1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    v = -dirs
+    cos_v = np.clip(np.sum(n * v, axis=-1), 0.0, 1.0)
+    f0 = float(S.get("fresnel_f0", 0.02))
+    fresnel = f0 + (1.0 - f0) * (1.0 - cos_v) ** 5
+    # A mirror-like surface reflects a sky gradient: a small tilt of the normal swings the reflected
+    # direction a lot, so the tilt towards the sun is amplified (`wave_shading`) rather than used as
+    # a Lambert term. Crests brighter than `crest` get a touch of white.
+    L = sun_vector(sun_cfg)
+    tilt = np.sum(n * L[None, None, :], axis=-1) - L[1]
+    shade = np.clip(1.0 + float(S.get("wave_shading", 8.0)) * tilt, 0.45, 1.7)
+    crest = float(S.get("crest", 1.3))
+    foam = np.clip(shade - crest, 0.0, None) * float(S.get("crest_white", 0.5))
+    sky = hex_to_rgb(S.get("sky_color", "#e4ebf0")) * 255.0
+    A = np.clip(float(S.get("base_alpha", 0.16)) + fresnel, 0.0, 0.95)[..., None]
+    surface = seen * (1.0 - A) + (sky[None, None, :] * shade[..., None]) * A + 255.0 * foam[..., None]
+    out = np.where(water[..., None], surface, seen)
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)

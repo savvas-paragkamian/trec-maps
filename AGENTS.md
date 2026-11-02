@@ -59,9 +59,13 @@ data/raw, data/derived/<t>, output/<t>
   (cubic, land set to nodata first) capped at -0.5 m, ramped to the cap over 6 cells from the
   shoreline. The grid agrees with the recorded station depths within 1.5 m (TE_176 -9.2 vs
   -8.6, TE_177 -129.6 vs -131).
-- **3D style**: one oblique block, land hypsometric, sea floor depth-tinted, no water surface;
-  path and stations are drawn after the render by projecting world points with the camera
-  (vector overlay in the PDF). Camera 170°/38°, fov 21°, sun 125°/35°, exaggeration 3.
+- **3D style**: one block seen from the south at a low angle (camera azimuth 180°, elevation
+  20°, fov 21°; the zoom 175°/22°), so it reads as a section through the coast rather than a
+  map: the cut front wall shows the sea floor profile, the exaggerated depth is seen side-on.
+  The first version at 170°/38° looked like a 2D map, which the user rejected. Sun 125°/35°,
+  exaggeration 3 on land. Path and stations are drawn after the render by projecting world
+  points with the camera (vector overlay in the PDF). The land started hypsometric and is
+  WorldCover now; the sea started as a flat depth tint and is a post-processed water surface.
 - **2D figure**: three panels on one distance line: the land transect in detail with its own
   vertical scale (the inset it replaced overlapped the sea floor), then the nearshore (metres)
   and the offshore (kilometres) sharing one elevation/depth axis; zone labels only where they fit.
@@ -73,6 +77,16 @@ data/raw, data/derived/<t>, output/<t>
   `exaggeration * sea_exaggeration_factor` (3 x 2 = 6), land x3, both stated in the legend;
   without the factor the shelf break read as flat. The nearshore zoom uses a shorter water
   depth scale (8 m) because its bay is under 10 m deep.
+- **Water surface** (`render.water_surface`, `render.water.surface`): per pixel, the ray's crossing
+  of sea level inside the block is the surface point and the hit below it the floor; the floor is
+  displaced a little by the wave slope (refraction), faded to the water colour by its true depth,
+  then veiled by a semi-transparent surface (`base_alpha` plus Fresnel) whose brightness follows
+  the wave tilt towards the sun, amplified (`wave_shading`, a mirror reflects a sky gradient, so
+  a few degrees of tilt are a lot) with white added on crests. Waves: four directional swells
+  (260-40 m, slopes 0.05-0.02, from about 200°) plus a smoothed random ripple field; the nearshore
+  zoom scales the wavelengths by 0.3. Sun glints were tried and dropped: with the sun and the
+  camera both near 35° elevation the mirror direction never meets the sun. Cut walls below sea
+  level keep the depth tint only (the water column in cross-section).
 - **Schematic** (`schematic.py`, after the TREC "sampling concept" figure in the design PDF): one
   section on a symmetric-log distance axis (linear within 20 m of the shoreline), so the
   20-255 m soil positions and the 1.2 / 12 km stations sit side by side; two stacked axes with
@@ -118,10 +132,17 @@ data/raw, data/derived/<t>, output/<t>
 - Water tint: a first version scaled by the ray's path length through water was invisible at these
   exaggerations; depth under the hit point is what reads. `render.pixel_rays` is the inverse of
   `world_to_pixel`, so hit points come from `origin + dir * depth`.
+- Wave shading: a Lambert term on 3° wave slopes changes brightness by under 1% (invisible), a
+  gain of 8 was a blotchy mess with blown crests; 3.5 with `base_alpha` 0.22 reads as water. The
+  ripple field is sampled with cubic splines on a grid of a quarter of its scale; linear sampling
+  on a coarser grid showed as a dotted moiré. Check the sea on 1:1 crops of `block_final.png`,
+  the 1600 px preview hides all of this.
 - Symmetric padding keeps the real cells' world X/Z unchanged (plate centred on the origin), so the
   overlay projection needs no offset; only Y changes with the sea factor (`render.world_y`).
 - Page furniture: credits and the symbol key sit top right (sky); the legend row at the bottom left
-  must clear the front wall, hence `fill` 0.82 and `target_shift_north_frac` -0.05 for the main block.
+  must clear the front wall, hence `fill` 0.84 and `target_shift_north_frac` -0.10 for the main
+  block (negative lifts the block in the frame). At a low camera the front wall is tall in the
+  frame; check the axis labels at the left edge and the legend row after any camera change.
 - Dropbox: `PYTHONDONTWRITEBYTECODE=1` in the Makefile, `*conflicted copy*` ignored, no venv here.
 - Timings (M1 Max): preview 1600x900 x 6 frames about 1 s; final 3840x2160 x 64 frames about 12 s (plus a few seconds for the page).
 
@@ -178,3 +199,22 @@ Done: the land-transect zoom became the first panel of `profile.png` (own vertic
 overlap); the 3D block became a solid with cut walls, a depth-tinted water body (also on the walls),
 a sea-level line, a vertical axis in metres and twice the vertical exaggeration below sea level;
 credits and the symbol key moved to the top right. Both transects re-rendered (`block_final`).
+
+### 2026-11-02 — water surface
+
+Request: "the water is not visible. Can you add something like atransparency and wavy texture to
+visualise depth beter?" then "is it ready?"
+
+Done: `render.water_surface` (semi-transparent wavy surface at sea level with depth attenuation,
+refraction and amplified wave shading; settings under `render.water.surface`, nearshore override
+`wave_scale: 0.3`), the sea legend bar shows the veiled colour, both `block_final` recomposed from
+the cached renders. Tuned on 1:1 crops: the first two settings were invisible and then far too harsh.
+
+### 2026-11-02 — section view
+
+Request: "the angle and azimuth is also an issue: make the block view closer to profile view because
+now it is more like a 2d map."
+
+Done: camera from the south at 20° (zoom 22°) instead of 38°, fill and target shift retuned so the
+axis and the legend clear the taller front wall, the soil-transect label moved above the inland-most
+position. Both `block_final` re-rendered.

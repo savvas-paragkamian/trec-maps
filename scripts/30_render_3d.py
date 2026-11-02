@@ -79,7 +79,7 @@ def main() -> None:
     rgb = rgba[..., :3]
     water = R.get("water") or {}
     if water.get("enabled", True):
-        rgb = render.water_tint(rgb, depth, camera, exag, sea_f, water)
+        rgb = render.water_surface(rgb, depth, camera, meta, pad, exag, sea_f, R["sun"], water)
     rgb = compose.vignette(compose.key_background(np.dstack([rgb, rgba[..., 3]]), depth, page_style["background"]),
                            float(page_style["vignette"]))
     page = compose.Page(rgb, dpi=args.dpi)
@@ -154,11 +154,11 @@ def main() -> None:
         for i in range(len(pr["px"])):
             page.marker(pr["px"][i], pr["py"][i], size=16, face=page_style["sample"], edge="white", shape="v")
         if len(pr["px"]):
-            i = int(np.argmax(-np.asarray(land_samples.shore_distance_m)))   # the shoreline position
-            page.text(pr["px"][i] - page.px(26), pr["py"][i] - page.px(40),
+            i = int(np.argmax(np.asarray(land_samples.shore_distance_m)))   # the inland-most position: label above it
+            page.text(pr["px"][i], pr["py"][i] - page.px(44),
                       f"{tcfg['land_site']} soil transect\n{len(land_samples)} positions, "
-                      f"{land_samples.shore_distance_m.min():g}-{land_samples.shore_distance_m.max():g} m from the shoreline",
-                      size=34, color=page_style["sample"], ha="right", va="bottom", linespacing=1.15, weight="bold")
+                      f"{land_samples.shore_distance_m.min():g}-{land_samples.shore_distance_m.max():g} m from the shore",
+                      size=34, color=page_style["sample"], ha="center", va="bottom", linespacing=1.15, weight="bold")
 
     lo_sea = math.floor(float(z.min()) / 25) * 25
     hi_land = max(25.0, math.ceil(float(z[land].max()) / 25) * 25) if land.any() else 25.0

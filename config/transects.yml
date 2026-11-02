@@ -27,5 +27,5 @@ transects:
     profile: {break_at_m: 400}
     render:
       exaggeration: 3
-      camera: {azimuth_deg: 160, elevation_deg: 45, fill: 0.58, target_shift_north_frac: 0.07}
-      water: {depth_scale_m: 8}         # the bay is under 10 m deep: tint it on a shorter depth scale
+      camera: {azimuth_deg: 175, elevation_deg: 22, fill: 0.66, target_shift_north_frac: -0.06}
+      water: {depth_scale_m: 8, surface: {wave_scale: 0.3, refraction_gain: 100}}   # a bay under 10 m deep, 2.4 km wide
