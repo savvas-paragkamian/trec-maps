@@ -58,14 +58,36 @@ def bbox_lonlat(bbox: dict, pad_deg: float = 0.003) -> tuple[float, float, float
 
 # ----------------------------------------------------------------------------- sources
 
-def dem_tiles_for(lonlat: tuple) -> list[tuple[str, str]]:
-    """GLO-30 tile names (south-west corner, e.g. ('N37', 'E023')) covering a lon/lat box."""
+def tiles_for(lonlat: tuple, size_deg: int = 1) -> list[tuple[str, str]]:
+    """Tile names by south-west corner ('N37', 'E023') for `size_deg`-degree tiles covering a lon/lat box."""
     minlon, minlat, maxlon, maxlat = lonlat
+    corner = lambda v: math.floor(v / size_deg) * size_deg
     tiles = []
-    for lat in range(math.floor(minlat), math.floor(maxlat) + 1):
-        for lon in range(math.floor(minlon), math.floor(maxlon) + 1):
+    for lat in range(corner(minlat), corner(maxlat) + 1, size_deg):
+        for lon in range(corner(minlon), corner(maxlon) + 1, size_deg):
             tiles.append((f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}", f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}"))
     return tiles
+
+
+def dem_tiles_for(lonlat: tuple) -> list[tuple[str, str]]:
+    """GLO-30 tile names (1-degree tiles) covering a lon/lat box."""
+    return tiles_for(lonlat, 1)
+
+
+def landcover_tiles_for(params: dict, lonlat: tuple) -> list[tuple[str, str]]:
+    return tiles_for(lonlat, int(params["sources"]["landcover"].get("tile_deg", 3)))
+
+
+def landcover_url(params: dict, lat_s: str, lon_s: str) -> str:
+    return params["sources"]["landcover"]["url"].format(lat=lat_s, lon=lon_s)
+
+
+def landcover_path(params: dict, name: str, lat_s: str, lon_s: str) -> Path:
+    return params["paths"]["raw_dir"] / "landcover" / f"worldcover_2021_{name}_{lat_s}{lon_s}.tif"
+
+
+def landcover_paths(params: dict, name: str) -> list[Path]:
+    return sorted((params["paths"]["raw_dir"] / "landcover").glob(f"worldcover_2021_{name}_*.tif"))
 
 
 def dem_tile_url(params: dict, lat_s: str, lon_s: str) -> str:
@@ -122,6 +144,17 @@ def read_dem(paths: list[Path], bbox: dict, resampling: str = "bilinear") -> np.
     return dem
 
 
+def read_classes(paths: list[Path], bbox: dict) -> np.ndarray:
+    """Class rasters (uint8) onto the grid by nearest neighbour; 0 where nothing maps."""
+    out = np.zeros((bbox["height"], bbox["width"]), np.uint8)
+    for path in paths:
+        with rasterio.open(path) as src:
+            tmp = _reproject(rasterio.band(src, 1), bbox, "nearest", src_nodata=src.nodata)
+        fill = (out == 0) & np.isfinite(tmp)
+        out[fill] = tmp[fill].astype(np.uint8)
+    return out
+
+
 def read_bathy(path: Path, bbox: dict, resampling: str = "cubic") -> tuple[np.ndarray, dict]:
     """EMODnet extract onto the grid. Fill values, land and zero cells become nodata before resampling,
     and the sign is checked: the grid must hold negative metres below the datum."""
@@ -170,21 +203,34 @@ def nearest_fill(arr: np.ndarray, valid: np.ndarray) -> np.ndarray:
 
 
 def merge_land_sea(dem: np.ndarray, bathy: np.ndarray, land: np.ndarray, cfg: dict) -> tuple[np.ndarray, dict]:
-    """Land cells take the DEM, sea cells the sea floor, capped below the surface and ramped to the
-    cap over `seam_cells` off the shoreline so the 115 m bathymetry meets the 30 m coastline."""
+    """Land cells take the DEM. Sea cells take the EMODnet floor where it exists; where it does not
+    (the 115 m grid stops short of the 30 m coastline) the floor slopes from the cap at the shoreline
+    down to the nearest known depth, weighted by the two distances, and the whole sea floor gets a
+    light Gaussian so the coarse source cells do not read as terraces."""
     cap = float(cfg["sea_floor_cap_m"])
-    seam = float(cfg.get("seam_cells", 0) or 0)
+    cell = float(cfg.get("cell_m", 10.0))
     sea = ~land
     dem_filled = nearest_fill(dem, np.isfinite(dem))
     sigma = float(cfg.get("land_smooth_sigma_cells", 0) or 0)
     if sigma > 0:
         dem_filled = ndimage.gaussian_filter(dem_filled, sigma)
     valid_b = np.isfinite(bathy) & sea
-    floor = nearest_fill(bathy, valid_b) if valid_b.any() else np.full_like(dem, cap)
-    floor = np.minimum(floor, cap)
-    if seam > 0:
-        dist = ndimage.distance_transform_edt(sea)      # sea cells: distance in cells to the nearest land cell
-        floor = cap + (floor - cap) * np.clip(dist / seam, 0.0, 1.0)
+    if valid_b.any():
+        d_valid, idx = ndimage.distance_transform_edt(~valid_b, return_indices=True)
+        nearest = np.minimum(bathy[tuple(idx)], cap)
+        d_shore = ndimage.distance_transform_edt(sea)       # sea cells: distance in cells to the nearest land cell
+        w = d_shore / np.maximum(d_shore + d_valid, 1e-6)   # 0 at the shoreline, 1 at a known cell
+        floor = np.where(valid_b, nearest, cap + (nearest - cap) * w)
+    else:
+        floor = np.full_like(dem, cap)
+    seam = float(cfg.get("seam_cells", 0) or 0)
+    if seam > 0:                                            # soften the first cells off the beach as well
+        d_shore = ndimage.distance_transform_edt(sea)
+        floor = cap + (floor - cap) * np.clip(d_shore / seam, 0.0, 1.0)
+    sigma_sea = float(cfg.get("bathy_smooth_sigma_m", 0) or 0) / cell
+    if sigma_sea > 0:
+        smooth = ndimage.gaussian_filter(floor, sigma_sea, mode="nearest")
+        floor = np.where(sea, np.minimum(smooth, cap), floor)
     z = np.ascontiguousarray(np.where(land, dem_filled, floor).astype(np.float32))
     assert np.isfinite(z).all()
     stats = {"z_min": float(z.min()), "z_max": float(z.max()), "land_fraction": float(land.mean()),
@@ -227,7 +273,17 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
     log(f"z {stats['z_min']:.1f}..{stats['z_max']:.1f} m, land {stats['land_fraction']:.0%}, "
         f"{stats['sea_cells_filled_from_neighbours']} sea cells filled from neighbours")
 
-    np.savez_compressed(npz, z=z, land=land, dem=dem, bathy=bathy)
+    lc_paths = landcover_paths(params, name)
+    if lc_paths:
+        landcover = read_classes(lc_paths, bbox)
+        codes, counts = np.unique(landcover[land], return_counts=True)
+        lc_fractions = {int(c): float(n / max(1, land.sum())) for c, n in zip(codes, counts)}
+        log("land cover on land: " + ", ".join(f"{c}: {f:.0%}" for c, f in sorted(lc_fractions.items(), key=lambda kv: -kv[1])))
+    else:
+        landcover, lc_fractions = np.zeros_like(land, dtype=np.uint8), {}
+        log("no land cover extract (scripts/02_get_landcover.py); the land keeps the hypsometric tint")
+
+    np.savez_compressed(npz, z=z, land=land, dem=dem, bathy=bathy, landcover=landcover)
     with rasterio.open(tif, "w", driver="GTiff", width=bbox["width"], height=bbox["height"], count=2, dtype="float32",
                        crs=bbox["crs"], transform=grid_transform(bbox), compress="deflate", tiled=True) as dst:
         dst.write(z, 1)
@@ -236,15 +292,19 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
         dst.set_band_description(2, "land mask")
     meta = {**bbox, "transform": list(grid_transform(bbox))[:6], "lonlat_bbox": list(lonlat),
             "dem_tiles": [p.name for p in present], "dem_tiles_missing": [p.name for p in tile_paths if not p.exists()],
-            "bathymetry_file": bpath.name, "bathymetry": binfo, **stats, "built": time.strftime("%Y-%m-%d %H:%M")}
+            "bathymetry_file": bpath.name, "bathymetry": binfo, **stats,
+            "landcover_files": [p.name for p in lc_paths], "landcover_fractions_on_land": lc_fractions,
+            "built": time.strftime("%Y-%m-%d %H:%M")}
     meta_path.write_text(json.dumps(meta, indent=2))
-    return {"z": z, "land": land, "dem": dem, "bathy": bathy, "meta": meta}
+    return {"z": z, "land": land, "dem": dem, "bathy": bathy, "landcover": landcover, "meta": meta}
 
 
 def load_grid(derived: Path) -> dict:
     data = np.load(derived / "grid.npz")
     meta = json.loads((derived / "grid.json").read_text())
-    return {"z": data["z"], "land": data["land"].astype(bool), "dem": data["dem"], "bathy": data["bathy"], "meta": meta}
+    landcover = data["landcover"] if "landcover" in data.files else np.zeros(data["z"].shape, np.uint8)
+    return {"z": data["z"], "land": data["land"].astype(bool), "dem": data["dem"], "bathy": data["bathy"],
+            "landcover": landcover, "meta": meta}
 
 
 def xy_to_rowcol(x, y, meta: dict) -> tuple[np.ndarray, np.ndarray]:

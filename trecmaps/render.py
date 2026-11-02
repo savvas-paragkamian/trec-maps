@@ -123,9 +123,35 @@ def ramp_rgb(values: np.ndarray, stops: list) -> np.ndarray:
     return np.stack([np.interp(v, xs, cols[:, c]) for c in range(3)], axis=-1).astype(np.float32)
 
 
-def make_albedo(z: np.ndarray, land: np.ndarray, cfg: dict) -> np.ndarray:
-    """Hypsometric tint on land, depth tint at sea, a light shoreline ring; linear RGB with alpha 1."""
-    rgb = np.where(land[..., None], ramp_rgb(z, cfg["land"]), ramp_rgb(z, cfg["sea"]))
+def soften_hex(color: str, soften) -> np.ndarray:
+    """Scale the HSV saturation and value of a colour (trec-coastal-microbiome's `landcover_palette`)."""
+    import colorsys
+    h, s_, v = colorsys.rgb_to_hsv(*hex_to_rgb(color))
+    return np.array(colorsys.hsv_to_rgb(h, s_ * float(soften[0]), v * float(soften[1])), np.float32)
+
+
+def landcover_lut(classes: dict, soften, water: str, fallback: str) -> np.ndarray:
+    """(256, 3) sRGB look-up table: class code -> softened legend colour; 80 (water) and unknown codes aside."""
+    lut = np.tile(hex_to_rgb(fallback), (256, 1)).astype(np.float32)
+    for code, (_, colour) in classes.items():
+        lut[int(code)] = soften_hex(colour, soften)
+    lut[80] = hex_to_rgb(water)
+    return lut
+
+
+def make_albedo(z: np.ndarray, land: np.ndarray, cfg: dict, landcover: np.ndarray | None = None,
+                lc_cfg: dict | None = None) -> np.ndarray:
+    """Land cover (or hypsometric tint) on land, depth tint at sea, a light shoreline ring; linear RGB, alpha 1."""
+    use_classes = (cfg.get("land_mode", "hypsometric") == "landcover" and landcover is not None
+                   and lc_cfg is not None and bool((landcover > 0).any()))
+    if use_classes:
+        classes = {int(k): (v[0], v[1]) for k, v in lc_cfg["classes"].items()}
+        lut = landcover_lut(classes, lc_cfg.get("soften_3d", [0.55, 0.92]), lc_cfg.get("water_color", "#a9c6d8"),
+                            lc_cfg.get("fallback_color", "#cfc6b4"))
+        land_rgb = lut[landcover]
+    else:
+        land_rgb = ramp_rgb(z, cfg["land"])
+    rgb = np.where(land[..., None], land_rgb, ramp_rgb(z, cfg["sea"]))
     shore = cfg.get("shoreline") or {}
     if int(shore.get("width_cells", 0)) > 0:
         ring = ndimage.binary_dilation(land, iterations=int(shore["width_cells"])) & ~land

@@ -5,6 +5,7 @@
 #   marine_sites  Tara stations in the order the profile path visits them after the shoreline
 #   waypoints     optional [lon, lat] points inserted after a site to keep a marine leg off the beach
 #   land_path     from_samples (shoreline event -> inland event) or explicit [[lon, lat], [lon, lat]]
+#   grid / profile / render   optional overrides of the same sections of params.yml (merged key by key)
 transects:
   anavyssos:
     title: "Anavyssos"
@@ -15,3 +16,15 @@ transects:
       - after: "041-11"
         points: [[23.9240, 37.7105], [23.8980, 37.7025]]
     land_path: from_samples
+  anavyssos_nearshore:
+    title: "Anavyssos, the land-sea interface"
+    subtitle: "TREC soil transect 041-03 (HCMR supersite) and Tara station TE_176, 1.2 km offshore"
+    land_site: "041-03"
+    marine_sites: ["041-11"]
+    waypoints: []
+    land_path: from_samples
+    grid: {cell_m: 5, margin_m: {north: 700, south: 700, east: 500, west: 700}}
+    profile: {break_at_m: 400}
+    render:
+      exaggeration: 3
+      camera: {azimuth_deg: 160, elevation_deg: 45, fill: 0.70, target_shift_north_frac: 0.10}

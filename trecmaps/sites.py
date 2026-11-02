@@ -175,3 +175,19 @@ def load_path(params: dict, tcfg: dict) -> tuple[list[dict], pd.DataFrame, pd.Da
     stations = load_marine_stations(params, list(tcfg.get("marine_sites") or []))
     points = path_points(tcfg, land, stations, params["profile"]["land_extension_m"])
     return points, land, stations
+
+
+def load_shoreline_water(params: dict, site_id: str) -> dict | None:
+    """The land site's own shoreline water samples (marine sheet, Sample type 'shoreline'): count, depth range, position."""
+    df = read_trec_xlsx(params["paths"]["marine_xlsx"])
+    rows = df[(df["Site ID"] == site_id)]
+    if "Sample type" in rows.columns:
+        rows = rows[rows["Sample type"].astype(str).str.strip().str.lower() == "shoreline"]
+    if rows.empty:
+        return None
+    dmin = _numeric(rows, "Depth range min (m)").median()
+    dmax = _numeric(rows, "Depth range max (m)").median()
+    lat = _numeric(rows, "Event latitude start (DD)").fillna(_numeric(rows, "Site latitude (DD)")).median()
+    lon = _numeric(rows, "Event longitude start (DD)").fillna(_numeric(rows, "Site longitude (DD)")).median()
+    return {"n_samples": int(len(rows)), "depth_min_m": 0.0 if math.isnan(dmin) else float(dmin),
+            "depth_max_m": 3.0 if math.isnan(dmax) else float(dmax), "lat": float(lat), "lon": float(lon)}

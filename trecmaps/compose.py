@@ -132,18 +132,45 @@ def draw_furniture(page: Page, *, title: str, subtitle: str, credits: list[str],
 
     bar_w, bar_h = page.px(620), page.px(30)
     y0 = H - margin - page.px(150)
-    for i, key in enumerate(("land", "sea")):
-        strip, lo, hi = legend[key]
-        x = margin + i * (bar_w + page.px(120))
-        label = "Land elevation (m)" if key == "land" else "Sea floor depth (m)"
-        page.text(x, y0 - page.px(44), label, size=30, color=text, va="bottom")
+    x = margin
+    if legend.get("classes"):
+        from matplotlib.patches import Rectangle
+        rows = 4
+        cols = int(np.ceil(len(legend["classes"]) / rows))
+        sw, row_h, col_w = page.px(40), page.px(44), page.px(430)
+        top = y0 + bar_h - rows * row_h + page.px(8)
+        page.text(x, top - page.px(44), legend.get("classes_title", "Land cover"), size=30, color=text, va="bottom")
+        for i, (label, colour) in enumerate(legend["classes"]):
+            cx, cy = x + (i // rows) * col_w, top + (i % rows) * row_h
+            page.ax.add_patch(Rectangle((cx, cy), sw, sw * 0.7, facecolor=colour, edgecolor="none", zorder=9))
+            page.text(cx + sw + page.px(14), cy + sw * 0.35, label, size=26, color=text, va="center")
+        x += cols * col_w + page.px(80)
+    else:
+        strip, lo, hi = legend["land"]
+        page.text(x, y0 - page.px(44), "Land elevation (m)", size=30, color=text, va="bottom")
         page.gradient_bar(x, y0, bar_w, bar_h, strip, edge=muted)
         for frac, value in ((0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)):
-            v = abs(value) if key == "sea" else value
-            page.text(x + frac * bar_w, y0 + bar_h + page.px(10), f"{v:.0f}", size=26, color=muted,
+            page.text(x + frac * bar_w, y0 + bar_h + page.px(10), f"{value:.0f}", size=26, color=muted,
                       ha="center" if 0 < frac < 1 else ("left" if frac == 0 else "right"), va="top")
+        x += bar_w + page.px(120)
+    strip, lo, hi = legend["sea"]
+    page.text(x, y0 - page.px(44), "Sea floor depth (m)", size=30, color=text, va="bottom")
+    page.gradient_bar(x, y0, bar_w, bar_h, strip, edge=muted)
+    for frac, value in ((0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)):
+        page.text(x + frac * bar_w, y0 + bar_h + page.px(10), f"{abs(value):.0f}", size=26, color=muted,
+                  ha="center" if 0 < frac < 1 else ("left" if frac == 0 else "right"), va="top")
     if legend.get("note"):
         page.text(margin, y0 + bar_h + page.px(70), legend["note"], size=26, color=muted, va="top")
+    for i, (label, kind, colour) in enumerate(legend.get("symbols", [])):
+        sx, sy = x + bar_w + page.px(140), y0 - page.px(30) + i * page.px(46)
+        if kind == "pin":
+            page.segment(sx, sy - page.px(16), sx, sy + page.px(16), color=colour, width=3, ls=(0, (2, 2)))
+            page.marker(sx, sy - page.px(16), size=12, face="white", edge=colour, edge_width=2)
+            page.marker(sx, sy, size=14, face=colour, edge="white")
+            page.marker(sx, sy + page.px(16), size=10, face="white", edge=colour, edge_width=2, shape="s")
+        else:
+            page.marker(sx, sy, size=16, face=colour, edge="white", shape=kind)
+        page.text(sx + page.px(34), sy, label, size=26, color=text, va="center")
 
     y = H - margin
     for line in reversed(credits):

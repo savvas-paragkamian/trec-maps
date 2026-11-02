@@ -18,4 +18,5 @@ def parser(doc: str) -> argparse.ArgumentParser:
 
 
 def setup(args) -> tuple[dict, dict]:
-    return C.load_params(args.params), C.load_transect(args.transect)
+    params, tcfg = C.load_params(args.params), C.load_transect(args.transect)
+    return C.apply_transect_overrides(params, tcfg), tcfg

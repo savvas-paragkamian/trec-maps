@@ -32,12 +32,13 @@ analysis pipeline and the per-transect 2D maps.
 config/params.yml, transects.yml     every tunable; transects by site ID
 trecmaps/config.py                   YAML loading, --set overrides, hex colours
 trecmaps/sites.py                    xlsx -> sites, land positions (shore_distance), stations (cable_out), path points
-trecmaps/fetch.py                    the download helper (HEAD size, .part, 404 = ocean tile)
+trecmaps/fetch.py                    the download helper (HEAD size, .part, 404 = ocean tile) and the COG window reader
+trecmaps/schematic.py                the sampling-concept figure (symlog distance axis, two vertical scales, tubes, cones, boats)
 trecmaps/terrain.py                  grid box, GLO-30 tile names, WCS request, reprojection, land/sea merge, build_grid
 trecmaps/profile.py                  polyline, sampling, sample/station placement, checks, the 2D figure
 trecmaps/render.py                   forge3d tiled render (from crete3d), albedo ramps, camera -> pixel projection
 trecmaps/compose.py                  keyed background, vignette, Page (matplotlib in pixel space), furniture
-scripts/00..30                       thin CLIs; scripts/_common.py adds the repo root to sys.path
+scripts/00..30                       thin CLIs; scripts/_common.py adds the repo root to sys.path and applies transect overrides
 data/raw, data/derived/<t>, output/<t>
 ```
 
@@ -63,6 +64,23 @@ data/raw, data/derived/<t>, output/<t>
   (vector overlay in the PDF). Camera 170°/38°, fov 21°, sun 125°/35°, exaggeration 3.
 - **2D figure**: two panels with a broken x axis at 1.5 km (metres, then kilometres), shared
   y, a zoom inset of the land transect in the right panel, zone labels only where they fit.
+- **Schematic** (`schematic.py`, after the TREC "sampling concept" figure in the design PDF): one
+  section on a symmetric-log distance axis (linear within 20 m of the shoreline), so the
+  20-255 m soil positions and the 1.2 / 12 km stations sit side by side; two stacked axes with
+  their own vertical scales (elevation above, depth below); WorldCover classes as a ribbon on
+  the land surface; soil tubes (green) and sediment tubes (orange) on the ground; water samples
+  as cones at `cable_out` depth plus the land site's 0-3 m shoreline water samples; a boat per
+  Tara station; the Inland / Coastal transition zone / Offshore band.
+- **Land cover**: ESA WorldCover 2021 (the layer of the R repository), read as a window of the
+  3-degree AWS COG, nearest-neighbour onto the grid, legend colours softened in HSV (0.72/0.96
+  for 2D as in R, 0.55/0.92 under the path tracer), water class in the sea colour. The 3D block
+  uses it by default (`render.albedo.land_mode: landcover`); `hypsometric` is the fallback.
+- **Nearshore zoom** (`anavyssos_nearshore`): 041-03 + TE_176 only, 5 m cells, smaller margins,
+  camera 160°/45°, exaggeration 3, as per-transect overrides in `transects.yml`.
+- **Sea floor where EMODnet is silent** (the shallow bay, about 12 000 cells in the zoom):
+  a distance-weighted slope from the shoreline cap to the nearest known depth, then a 40 m
+  Gaussian over the sea floor (`grid.bathy_smooth_sigma_m`). Before that the nearest-neighbour
+  fill produced flat terraces that the 3D render showed as shelves. This floor is modelled.
 
 ## Gotchas
 
@@ -82,6 +100,12 @@ data/raw, data/derived/<t>, output/<t>
   The DEM at the 041-03 site is 1.9 m where the site export says 7 m (the site point is on the beach).
 - xlsx exports: title in row 1, header in row 2 (`pd.read_excel(header=1)`); attribute columns
   are JSON lists of `{attribute, value, unit}`.
+- `stations.csv` stores the cast depths as `d1;d2`; a one-cast station comes back from pandas as a
+  float, so `profile.casts_of` accepts numbers too (the first renders had no depth markers).
+- The shoreline water samples (0-3 m) sit where the filled floor is only 0.5 m deep; the schematic
+  draws that marker no deeper than half the local floor depth.
+- Symlog axes: label positions near the panel edges are decided in display space after
+  `fig.canvas.draw()`; zone-band labels sit at the visual midpoint, not the arithmetic one.
 - Dropbox: `PYTHONDONTWRITEBYTECODE=1` in the Makefile, `*conflicted copy*` ignored, no venv here.
 - Timings (M1 Max): preview 1600x900 x 6 frames about 1 s; final 3840x2160 x 64 frames about 12 s (plus a few seconds for the page).
 
@@ -113,3 +137,18 @@ Done: environment, config, the six modules and five scripts, downloads for Anavy
 tile, a 161 x 70 EMODnet extract), the merged grid, `profile.png/.pdf`, `block_preview` and
 `block_final` with the overlay. Not done: the other four Athens transects (041-01, -02, -04, -05;
 add entries to `transects.yml`), a ribbon/section 3D style, GitHub remote and first commit (the user's).
+
+### 2026-11-02 — schematic figure, land cover, sample depths in 3D, nearshore zoom
+
+Request: "now take a look at screenshot. Create a similar one with real data. you can crop/log
+transform the x axis of the distance in order to move closer the LSI with the ocean samples. Also
+add the land cover data as in trec-coastal repo. And the 3d also show the depth of the sea samples
+all in one map. Recap: make another 2-3 figures based on instuctions"
+
+The screenshot is the TREC "sampling concept" figure (Box 2 of the design document). Done:
+`scripts/02_get_landcover.py` (WorldCover window), land cover in the grid, the profile tables and
+the 3D albedo with a class legend; `scripts/21_profile_schematic.py` and `trecmaps/schematic.py`;
+pins with sea level, sampling depth and sea floor per Tara station in the 3D block; the
+`anavyssos_nearshore` transect with per-transect overrides; the nearshore sea-floor blend and
+smoothing. Figures: `output/anavyssos/schematic`, `output/anavyssos/block_final` (land cover +
+pins), `output/anavyssos_nearshore/block_final` and `schematic`. Final renders take about 12 s.

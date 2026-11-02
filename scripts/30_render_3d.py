@@ -38,7 +38,7 @@ def main() -> None:
         camera = json.loads(cam_file.read_text())
         log(f"reusing {cache.name}")
     else:
-        albedo = render.make_albedo(z, land, R["albedo"])
+        albedo = render.make_albedo(z, land, R["albedo"], grid["landcover"], params["sources"]["landcover"])
         log(f"{size[0]}x{size[1]} px, {frames} frames, {z.shape[1]}x{z.shape[0]} cells, exaggeration {exag:g}")
         res = render.render_plate(z, albedo, cell_m=meta["cell_m"], size_px=size, frames=frames,
                                   camera_cfg=R["camera"], sun_cfg=R["sun"], exaggeration=exag,
@@ -77,15 +77,22 @@ def main() -> None:
             pr = render.world_to_pixel(pts, camera, W, H)
             v = render.visible(pr, depth, kind, rel_tol=0.03)
             sx, sy, fx, fy = pr["px"][0], pr["py"][0], pr["px"][1], pr["py"][1]
+            # the pin: sea level (hollow circle) -> sampling depth (filled) -> sea floor (square)
             page.segment(sx, sy, fx, fy, color=page_style["station"], width=3, ls=(0, (2, 2)), alpha=0.9 if v[1] else 0.4)
             page.marker(fx, fy, size=16, face="white", edge=page_style["station"], edge_width=2.5, shape="s")
+            page.marker(sx, sy, size=18, face="white", edge=page_style["station"], edge_width=2.5)
             for i, d in enumerate(casts):
                 page.marker(pr["px"][2 + i], pr["py"][2 + i], size=22, face=page_style["station"], edge="white")
             depth_txt = f"sea floor {abs(float(st.bathymetry_m)):.0f} m" if not math.isnan(float(st.bathymetry_m)) else ""
             cast_txt = ("sampled at " + ", ".join(f"{d:g}" for d in casts) + " m") if casts else ""
-            label = "\n".join(t for t in (f"{st.alias}  {st.station_name}", depth_txt, cast_txt) if t)
-            page.text(sx + page.px(26), sy - page.px(26), label, size=34, color=page_style["station"], va="bottom",
-                      linespacing=1.15, weight="bold")
+            label = "\n".join(t for t in (f"{st.alias}  {st.station_name}", cast_txt, depth_txt,
+                                          f"{int(st.n_samples)} samples") if t)
+            if sx > 0.72 * W:   # near the right edge the land is behind the pin: label below-left, over the water
+                page.text(sx - page.px(30), sy + page.px(40), label, size=34, color=page_style["station"],
+                          ha="right", va="top", linespacing=1.15, weight="bold")
+            else:
+                page.text(sx + page.px(30), sy - page.px(30), label, size=34, color=page_style["station"],
+                          va="bottom", linespacing=1.15, weight="bold")
 
         pts = render.grid_to_world(land_samples.x, land_samples.y, land_samples.z + 1.0, meta, exag)
         pr = render.world_to_pixel(pts, camera, W, H)
@@ -102,10 +109,24 @@ def main() -> None:
     hi_land = max(25.0, math.ceil(float(z[land].max()) / 25) * 25) if land.any() else 25.0
     legend = {"land": (render.legend_gradient(R["albedo"]["land"], 0.0, hi_land), 0.0, hi_land),
               "sea": (render.legend_gradient(R["albedo"]["sea"], 0.0, lo_sea), 0.0, lo_sea),
-              "note": f"Vertical exaggeration x{exag:g}. Grid {meta['cell_m']:g} m, {meta['crs']}."}
-    credits = [f"Land: {params['sources']['dem']['citation']}",
-               f"Sea floor: {params['sources']['bathymetry']['citation']}",
-               "Samples: TREC (EMBL) data portal. Rendered with forge3d."]
+              "note": f"Vertical exaggeration x{exag:g}. Grid {meta['cell_m']:g} m, {meta['crs']}.",
+              "symbols": [("Tara station: sea level, sampling depth, sea floor", "pin", page_style["station"]),
+                          ("soil / sediment sampling position", "v", page_style["sample"])]}
+    LC = params["sources"]["landcover"]
+    use_classes = R["albedo"].get("land_mode") == "landcover" and bool((grid["landcover"] > 0).any())
+    if use_classes:
+        classes = C.landcover_classes(params)
+        lut = render.landcover_lut(classes, LC.get("soften_3d", [0.55, 0.92]), LC.get("water_color", "#a9c6d8"),
+                                   LC.get("fallback_color", "#cfc6b4"))
+        fractions = {int(k): v for k, v in meta.get("landcover_fractions_on_land", {}).items()}
+        present = [c for c, f in sorted(fractions.items(), key=lambda kv: -kv[1]) if c in classes and f >= 0.01]
+        legend["classes"] = [(classes[c][0], tuple(float(v) for v in lut[c])) for c in present]
+        legend["classes_title"] = "Land cover (ESA WorldCover 2021)"
+    credits = [f"Land: {params['sources']['dem']['citation']}"]
+    if use_classes:
+        credits.append(f"Land cover: {LC['citation']}")
+    credits += [f"Sea floor: {params['sources']['bathymetry']['citation']}",
+                "Samples: TREC (EMBL) data portal. Rendered with forge3d."]
     compose.draw_furniture(page, title=tcfg["title"], subtitle=tcfg.get("subtitle", ""), credits=credits,
                            legend=legend, style=page_style)
     out_png = out / f"block_{args.quality}{args.tag}.png"

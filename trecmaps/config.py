@@ -61,3 +61,26 @@ def apply_overrides(cfg: dict, items: list[str] | None) -> dict:
             node = node[part]
         node[parts[-1]] = yaml.safe_load(value)
     return cfg
+
+
+def deep_update(base: dict, overrides: dict) -> dict:
+    """Merge `overrides` into `base` key by key (nested dicts merge, anything else replaces)."""
+    for key, value in (overrides or {}).items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def apply_transect_overrides(params: dict, tcfg: dict) -> dict:
+    """A transect may override the grid, profile, schematic and render sections of params.yml."""
+    for section in ("grid", "profile", "schematic", "render"):
+        if isinstance(tcfg.get(section), dict):
+            deep_update(params[section], tcfg[section])
+    return params
+
+
+def landcover_classes(params: dict) -> dict:
+    """{code: (label, '#rrggbb')} from sources.landcover.classes."""
+    return {int(k): (v[0], v[1]) for k, v in params["sources"]["landcover"]["classes"].items()}

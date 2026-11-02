@@ -36,8 +36,9 @@ def sample_line(line: LineString, grid: dict, s0: float, step_m: float) -> pd.Da
     row, col = xy_to_rowcol(x, y, meta)
     z = ndimage.map_coordinates(grid["z"], [row, col], order=1, mode="nearest")
     land = ndimage.map_coordinates(grid["land"].astype(np.uint8), [row, col], order=0, mode="nearest").astype(bool)
+    landcover = ndimage.map_coordinates(grid["landcover"], [row, col], order=0, mode="nearest").astype(int)
     lon, lat = Transformer.from_crs(meta["crs"], "EPSG:4326", always_xy=True).transform(x, y)
-    return pd.DataFrame({"s": s - s0, "x": x, "y": y, "lon": lon, "lat": lat, "z": z, "land": land})
+    return pd.DataFrame({"s": s - s0, "x": x, "y": y, "lon": lon, "lat": lat, "z": z, "land": land, "landcover": landcover})
 
 
 def z_at(profile: pd.DataFrame, s) -> np.ndarray:
@@ -69,11 +70,16 @@ def place_stations(stations: pd.DataFrame, profile: pd.DataFrame, line: LineStri
 
 
 def casts_of(value) -> list[float]:
+    """Sampling depths from a list, a 'd1;d2' string or a single number (a one-cast station read back from CSV)."""
     if isinstance(value, (list, tuple)):
         return [float(v) for v in value]
     if isinstance(value, str) and value.strip():
         return [float(v) for v in value.split(";") if v.strip()]
-    return []
+    try:
+        f = float(value)
+        return [] if math.isnan(f) else [f]
+    except (TypeError, ValueError):
+        return []
 
 
 def check_profile(profile: pd.DataFrame, stations: pd.DataFrame) -> list[str]:

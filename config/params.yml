@@ -24,6 +24,28 @@ sources:
     native_deg: 0.00104166666667        # 1/960 degree = 1/16 arc minute (about 115 m)
     margin_cells: 4                     # extra native cells around the grid's bounding box
     citation: "EMODnet Bathymetry Consortium (2024). EMODnet Digital Bathymetry (DTM 2024). doi:10.12770/cf51df64-56f9-4a99-b1aa-36b8d7b743a1"
+  landcover:
+    # ESA WorldCover 2021 v200, 10 m, 3 x 3 degree cloud-optimised tiles on AWS; only the window
+    # over the grid is read (GDAL range requests), as scripts/get_spatial.R does in trec-coastal-microbiome.
+    url: "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{lat}{lon}_Map.tif"
+    tile_deg: 3
+    citation: "ESA WorldCover 2021 v200 (Zanaga et al. 2022, doi:10.5281/zenodo.7254221), 10 m, CC BY 4.0"
+    classes:                            # code: [label, official legend colour]
+      10: ["tree cover", "#006400"]
+      20: ["shrubland", "#ffbb22"]
+      30: ["grassland", "#ffff4c"]
+      40: ["cropland", "#f096ff"]
+      50: ["built-up", "#fa0000"]
+      60: ["bare / sparse vegetation", "#b4b4b4"]
+      70: ["snow and ice", "#f0f0f0"]
+      80: ["permanent water bodies", "#0064c8"]
+      90: ["herbaceous wetland", "#0096a0"]
+      95: ["mangroves", "#00cf75"]
+      100: ["moss and lichen", "#fae6a0"]
+    soften: [0.72, 0.96]                # HSV saturation / value factors for the 2D figures (trec-coastal-microbiome)
+    soften_3d: [0.55, 0.92]             # the path tracer adds its own light (crete3d used 0.52 / 0.92)
+    water_color: "#a9c6d8"              # inland water bodies; the legend's dark blue reads as a shoreline step
+    fallback_color: "#cfc6b4"           # land cells without a class
 
 grid:
   crs: "EPSG:2100"                      # GGRS87 / Greek Grid (metres); EPSG:3035 for a pan-European run
@@ -35,6 +57,7 @@ grid:
   sea_floor_cap_m: -0.5                 # sea cells never rise above this
   min_land_component_cells: 8           # drop DEM speckle at sea
   seam_cells: 6                         # ramp the sea floor from the cap to EMODnet over this many cells off the shoreline
+  bathy_smooth_sigma_m: 40              # Gaussian on the sea floor (metres): the 115 m source cells would read as terraces
   land_smooth_sigma_cells: 0            # optional Gaussian on land (GLO-30 is a surface model: buildings, trees)
 
 profile:
@@ -60,6 +83,31 @@ profile:
     station: "#c8102e"
     sample: "#20262e"
 
+schematic:                              # the TREC sampling-concept figure drawn with real data
+  linthresh_m: 20                       # symmetric-log distance axis: linear within +-20 m of the shoreline
+  linscale: 0.35
+  ribbon_pt: 5                          # land cover ribbon along the surface, in points
+  tube_pt: 11                           # sample tube markers, in points
+  figure: {width_in: 12.5, height_in: 6.4, dpi: 300}
+  zones:
+    - {name: "Inland", from: null, to: -50, color: "#b9d59a"}
+    - {name: "Coastal transition zone", from: -50, to: 1000, color: "#ead9a6"}
+    - {name: "Offshore", from: 1000, to: null, color: "#a9c9e3"}
+  colors:
+    land: "#d8cdb0"
+    ground_line: "#6b5e48"
+    sea_floor: "#9fb7c2"
+    water: "#cfe6ee"
+    sea_level: "#2f6fa3"
+    soil: "#6f9a3a"
+    sediment: "#c98b3a"
+    tube_edge: "#3b3b3b"
+    water_sample: "#bfe0ee"
+    water_sample_edge: "#2f6fa3"
+    cast_line: "#2f6fa3"
+    boat: "#20262e"
+    text: "#20262e"
+
 render:
   exaggeration: 3.0                     # vertical exaggeration on top of true metres
   tile_px: 960                          # the grid plus one tile must stay under forge3d's 512 MiB budget
@@ -83,6 +131,7 @@ render:
     draft: {size: [2560, 1440], frames: 16}
     final: {size: [3840, 2160], frames: 64}
   albedo:                               # sRGB stops [height_m, colour], interpolated per channel, then linearised
+    land_mode: landcover                # landcover (ESA WorldCover classes) or hypsometric (the `land` ramp)
     land: [[0, "#dcd2b6"], [10, "#cfc49e"], [50, "#b9b78b"], [150, "#a3a67a"], [400, "#8f8a6a"]]
     sea: [[0, "#e3f1f3"], [-5, "#bfe0e6"], [-15, "#8fc6d3"], [-40, "#5fa3bb"], [-80, "#3a7ea0"], [-130, "#285d83"], [-200, "#1c4166"]]
     shoreline: {color: "#f6efdc", width_cells: 1}
