@@ -342,5 +342,13 @@ Done: the two exports replace the three old ones (`paths`), sites derived from t
 transect rule (109 generated + 6 explicit), UTM grids, DEM windows, WorldCover in the land
 mask, nominal shore distances, the block-height cap, station titles, the soil-label rule,
 `make list | maps | all`. Checked by eye on Roscoff 2 (Atlantic, two stations, 90° camera) and
-Bergen 1 (fjord, 250 m deep at 600 m). Batch: `make all Q=preview` for every transect, then the
-final renders; see the next entry for the outcome.
+Bergen 1 (fjord, 250 m deep at 600 m). Batches (2026-11-02/03): `make all Q=preview` for every
+transect (115, none failed; 55 had marine legs over land, which led to the sea routing, the
+wider-margin overrides and the 10 km rule for unrelated stations), then `make all Q=final`:
+230 final renders at 9 s each, every transect has profile, schematic, `block_final` and
+`block_final_side` (PNG + PDF). Still crossing land (see Sea routing): Baie de Veys 1,
+Banyuls 2, Helsingor 1, Rostock 1 (its offshore end), Sylt 2 and Roscoff 3 (tidal flats
+counted as land on the last stretch), Thrace 4, Kristineberg 3, Bilbao 2, La Tremblade 1.
+Not reviewed: most of the 109 generated figures were only spot-checked (Roscoff 1-2, Bergen 1,
+Tallinn 1, Texel 2, Naples 2, Barcelona 2, Kotor 1, Aarhus 1, Sylt 2, Helsingor 2); label
+collisions near short legs (Naples 2) are left for per-transect overrides.
