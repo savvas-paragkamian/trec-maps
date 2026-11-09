@@ -23,7 +23,7 @@ analysis pipeline and the per-transect 2D maps.
   as in `trec-coastal-microbiome`. The environment lives in conda's envs dir, never inside
   this Dropbox folder. forge3d comes from PyPI (pip section), 1.44.0 is the verified version.
 - **No `Co-Authored-By: Claude` lines** in commits or PRs. The user commits and merges.
-- Keep it small ("less is more"): six modules, five scripts, two YAML files. Nothing hard-coded
+- Keep it small ("less is more"): eight modules, seven scripts, two YAML files. Nothing hard-coded
   in `trecmaps/` that belongs in `config/params.yml`.
 - Do not name a data source that was not verified; the citations in `params.yml` are the ones to use.
 
@@ -35,11 +35,11 @@ trecmaps/config.py                   YAML loading, --set overrides, hex colours
 trecmaps/sites.py                    exports (pickle-cached) -> sites, land positions (shore_distance), stations (cable_out), auto transects, path points
 trecmaps/fetch.py                    the download helper (HEAD size, .part, 404 = ocean tile) and the COG window reader
 trecmaps/schematic.py                the sampling-concept figure (symlog distance axis, two vertical scales, tubes, cones, boats)
-trecmaps/terrain.py                  grid box, GLO-30 tile names, WCS request, reprojection, land/sea merge, build_grid
-trecmaps/profile.py                  polyline, sampling, sample/station placement, checks, the 2D figure
+trecmaps/terrain.py                  grid box (UTM auto, cell cap), tile names, DEM/WorldCover windows, WCS request, land/sea merge, build_grid
+trecmaps/profile.py                  polyline, sea routing of marine legs, sampling, sample/station placement, checks, the 2D figure
 trecmaps/render.py                   forge3d tiled render (from crete3d), albedo ramps, camera -> pixel projection
 trecmaps/compose.py                  keyed background, vignette, Page (matplotlib in pixel space), furniture
-scripts/00..30                       thin CLIs; scripts/_common.py adds the repo root to sys.path and applies transect overrides
+scripts/00..30                       thin CLIs; scripts/_common.py adds the repo root to sys.path, applies transect overrides, lists transects
 data/raw, data/derived/<t>, output/<t>
 ```
 
@@ -53,9 +53,11 @@ data/raw, data/derived/<t>, output/<t>
 - **Sampling depths** of the Tara stations come from `cable_out` in the event attributes; the
   sheet's `Depth range (m)` is "0-3" for nearly every marine sample and is not used. Water depth
   per station: the site's `bathymetry` attribute (sounder values as fallback).
-- **Grid**: EPSG:2100 (the user's default for Greek maps; EPSG:3035 is what the R pipeline
+- **Grid**: first EPSG:2100 (the user's default for Greek maps; EPSG:3035 is what the R pipeline
   uses), 10 m cells, margins 2.5 km north / 1.5 km elsewhere around the path's box. Anavyssos:
-  1337 x 638 cells, 0.85 M, far under forge3d's limit (about 7 M cells).
+  1337 x 638 cells, 0.85 M, far under forge3d's limit (about 7 M cells). Since the all-transects
+  round the CRS is the path's UTM zone (`grid.crs: auto`, Athens = EPSG:32634/32635) and
+  `grid.max_cells` (6 M) coarsens the cell for very wide boxes (none needed it so far).
 - **Land/sea merge**: land = GLO-30 > 0.5 m minus components < 8 cells; sea floor = EMODnet
   (cubic, land set to nodata first) capped at -0.5 m, ramped to the cap over 6 cells from the
   shoreline. The grid agrees with the recorded station depths within 1.5 m (TE_176 -9.2 vs
@@ -127,7 +129,7 @@ data/raw, data/derived/<t>, output/<t>
   position; the labels show both (`profile.floor_label`) whenever they differ by more than 25%.
   `check_profile` ignores the first 50 m off the shoreline (beach cells in a 30 m DEM).
 - **Nearshore zoom** (`anavyssos_nearshore`): 041-03 + TE_176 only, 5 m cells, smaller margins,
-  camera 160°/45°, exaggeration 3, as per-transect overrides in `transects.yml`.
+  camera 175°/22°, exaggeration 3, as per-transect overrides in `transects.yml`.
 - **Sea floor where EMODnet is silent** (the shallow bay, about 12 000 cells in the zoom):
   a distance-weighted slope from the shoreline cap to the nearest known depth, then a 40 m
   Gaussian over the sea floor (`grid.bathy_smooth_sigma_m`). Before that the nearest-neighbour
@@ -234,10 +236,33 @@ data/raw, data/derived/<t>, output/<t>
 
 ```bash
 make check                                   # forge3d 1.44.0 gpu True
+make list                                    # 115 transects (6 explicit + 109 generated); 15 s the first time (xlsx -> pickle cache)
 python scripts/10_build_grid.py --force      # prints z range, land fraction, station depths vs recorded
-python scripts/20_profile_2d.py              # "marine legs stay at sea" and the station depth checks
+python scripts/20_profile_2d.py              # "leg ... routed through N waypoints", "marine legs stay at sea", station depth checks
 python scripts/30_render_3d.py               # "median rendered/projected = 1.000x" and "path: 100% visible"
+make all Q=preview                           # every transect, about 40 min; failures land in output/failed.txt
 ```
+
+## Status and next steps (2026-11-09)
+
+- Every transect has final figures (`make all Q=final`, 2026-11-02/03; 230 renders at 9 s). Code
+  and config are committed ("make maps for all transects of trec"); the figures and data are not
+  (ignored). The grids all match the current config (checked 2026-11-09).
+- Ten transects still have marine legs over land and need hand-set waypoints in
+  `auto.overrides` (see Sea routing): Baie de Veys 1, Banyuls 2, Helsingor 1, Rostock 1,
+  Sylt 2, Roscoff 3, Thrace 4, Kristineberg 3, Bilbao 2, La Tremblade 1. After a waypoint:
+  `make maps T=<name> Q=final` (the bathymetry and the windows re-fetch if the box grew).
+- Only about a dozen of the 109 generated figures were reviewed by eye; a review pass would look
+  at label collisions on short legs (Naples 2), the station labels over hills (Kotor 1), the
+  Wadden Sea flats counted as land (Sylt 2, Roscoff 3), and whether the 2 km offshore extension
+  is wanted for the 13 station-less transects.
+- Candidates for deletion in `data/`: the two older exports (`TREC_sample_data_export.xlsx`,
+  `TREC_sample_data_athens_marine_metagenome.xlsx`) and the four full GLO-30 tiles in
+  `data/raw/dem` (57 MB); nothing reads them.
+- The Mac moved from EET to CET between the batch and the check, so file times read one hour
+  earlier than the batch logs say.
+- Possible follow-ups the user has not asked for: a contact-sheet of all 115 blocks, an index
+  page listing transects with their stations, EPSG:3035 for a pan-European overview map.
 
 ## Log
 
