@@ -72,13 +72,27 @@ data/raw, data/derived/<t>, output/<t>
 - **2D figure**: three panels on one distance line: the land transect in detail with its own
   vertical scale (the inset it replaced overlapped the sea floor), then the nearshore (metres)
   and the offshore (kilometres) sharing one elevation/depth axis; zone labels only where they fit.
-- **3D block as a solid**: the grid is rimmed with one cell at a base depth (`render.block`), so
-  the heightfield drops into cut walls; everything below sea level is tinted by its true depth in
-  post-processing (`render.water`, from the depth AOV and the camera), which paints the water
-  column on the walls as a cross-section; a sea-level line runs along the front wall and a
-  vertical axis in metres stands outside the south-west corner. Depths are exaggerated
-  `exaggeration * sea_exaggeration_factor` (3 x 2 = 6), land x3, both stated in the legend;
-  without the factor the shelf break read as flat. The nearshore zoom uses a shorter water
+  The ground under the sea floor is brown (`colors.sea_floor`, it was blue-grey and the section
+  read as all water) and is filled under the whole line with the land drawn on top: a land/sea
+  mask alone leaves a white wedge in every step where land turns to sea (wide in the schematic's
+  linear zone). The last panel ends `end_padding_frac` after the last station; the land panel
+  widens to the inland-most sample (it hid Asko 2's 805 m, Barcelona 4's 400 m, Helsingor 2's
+  3 km), without zone labels when widened.
+- **3D block as a solid**: the grid is rimmed with two cells (`render.block.pad_cells`): one at
+  the edge heights, then the base depth, so the heightfield drops into cut walls of one colour
+  (with a single ring the wall blended the edge cells' land cover from top to bottom: vertical
+  streaks). The walls are brown ground (`cut_face_color` #7d6450). Below sea level the floor is
+  tinted by its true depth in post-processing (`render.water`, from the depth AOV and the
+  camera); rays that enter under sea level through the front and hit the floor behind make the
+  water column in cross-section, and the wall pixels (the `cut` mask: albedo within 0.005 of the
+  wall colour, so no other albedo may come that close) keep their brown. Until 2026-11-11 the
+  walls were tinted too, and the whole front read as water. A sea-level line runs along the front
+  wall and a vertical axis in metres stands outside the front-left corner (steps coarsen above
+  `axis.max_ticks`). Depths are exaggerated `exaggeration * sea_exaggeration_factor` (3 x 2 = 6),
+  land x3, both stated in the legend; without the factor the shelf break read as flat. Both
+  shrink when the block is taller than `max_block_height_frac` (0.25 since 2026-11-11, it was
+  0.45) x the plate's shorter side, floored to one decimal: 26 transects (Anavyssos x2.1, Kotor 1
+  x1.6, Calabria 1 x1.1, Bergen and Psatha x1). The nearshore zoom uses a shorter water
   depth scale (8 m) because its bay is under 10 m deep.
 - **Sea colours**: the floor albedo is a sand-to-dark-brown ramp (like sea-floor relief models), the
   water body a depth ramp from turquoise (0-5 m) to deep blue (160 m+, `render.water.color_stops`),
@@ -93,8 +107,7 @@ data/raw, data/derived/<t>, output/<t>
   a few degrees of tilt are a lot) with white added on crests. Waves: four directional swells
   (260-40 m, slopes 0.05-0.02, from about 200°) plus a smoothed random ripple field; the nearshore
   zoom scales the wavelengths by 0.3. Sun glints were tried and dropped: with the sun and the
-  camera both near 35° elevation the mirror direction never meets the sun. Cut walls below sea
-  level keep the depth tint only (the water column in cross-section).
+  camera both near 35° elevation the mirror direction never meets the sun.
 - **Schematic** (`schematic.py`, after the TREC "sampling concept" figure in the design PDF): one
   section on a symmetric-log distance axis (linear within 20 m of the shoreline), so the
   20-255 m soil positions and the 1.2 / 12 km stations sit side by side; two stacked axes with
@@ -153,7 +166,7 @@ data/raw, data/derived/<t>, output/<t>
   WorldCover classes other than water count as land (`grid.landcover_as_land`, for polders and
   flats under the 0.5 m threshold); samples without `shore_distance` (Galway 1 shoreline,
   Faro 1 inland) take the zone's nominal distance; the block's exaggerations shrink when it
-  would be taller than 0.45 x the plate's shorter side (`render.max_block_height_frac`:
+  would be too tall for its plate (`render.max_block_height_frac`, see the 3D block above:
   Bergen's fjord at x6 was a tower); a station without a `station_name` is titled by its
   alias only (`profile.station_title`); the soil label moves beside its markers when a
   station pin is close (Bergen, Roscoff 2). `make all Q=<quality>` runs every transect in
@@ -220,8 +233,11 @@ data/raw, data/derived/<t>, output/<t>
   overlay projection needs no offset; only Y changes with the sea factor (`render.world_y`).
 - Page furniture: credits and the symbol key sit top right (sky); the legend row at the bottom left
   must clear the front wall, hence `fill` 0.84 and `target_shift_north_frac` -0.10 for the main
-  block (negative lifts the block in the frame). At a low camera the front wall is tall in the
-  frame; check the axis labels at the left edge and the legend row after any camera change.
+  block (negative lifts the block in the frame). That was not enough for about 20 transects (the
+  axis labels ran into the land-cover title, Calabria 1's wall covered the sea legend), so
+  `make_camera` now lowers the camera until the base corners project above
+  `camera.max_bottom_frac` (0.74 of the frame height), stepping back when the block's top would
+  rise above `min_top_frac` (the top estimate is the bounding box, so it is conservative).
 - `make_camera` target shifts are camera-relative ("north" = away from the camera, "east" = to its
   right); a sign slip here dropped the block onto the legend once. The vertical axis stands at the
   block corner nearest the camera, moved towards it and to the viewer's left (`front_left_corner`),

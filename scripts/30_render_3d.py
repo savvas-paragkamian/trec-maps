@@ -87,7 +87,7 @@ def main() -> None:
         height = exag * max(top, 0.0) + exag * sea_f * max(-base_z, 0.0)
         limit = cap * min(meta["width"], meta["height"]) * meta["cell_m"]
         if height > limit:
-            exag = max(1.0, round(exag * limit / height, 2))    # the sea factor (the land/sea ratio) stays
+            exag = max(1.0, math.floor(exag * limit / height * 10) / 10)   # one decimal; the sea factor (land/sea ratio) stays
             log(f"block {height / 1000:.1f} km tall against a {limit / cap / 1000:.1f} km plate: "
                 f"exaggeration reduced to x{exag:g} on land, x{exag * sea_f:g} at sea")
     cache = derived / f"render_{args.quality}{view_tag}{args.tag}.npz"
@@ -119,7 +119,7 @@ def main() -> None:
                                   earth_model=R.get("earth_model"), refraction_model=R.get("refraction_model"), log=log)
         rgba, depth, camera = res["rgba"], res["depth"], res["camera"]
         cut_lin = render.srgb_to_linear(C.hex_to_rgb(B.get("cut_face_color", "#c9bfae")))
-        cut = np.all(np.abs(res["albedo"] - cut_lin[None, None, :]) < 0.02, axis=-1) if pad > 0 else np.zeros(depth.shape, bool)
+        cut = np.all(np.abs(res["albedo"] - cut_lin[None, None, :]) < 0.005, axis=-1) if pad > 0 else np.zeros(depth.shape, bool)
         np.savez_compressed(cache, rgba=rgba, depth=depth, cut=cut)
         cam_file.write_text(json.dumps({**camera, "size": size, "exaggeration": exag, "sea_factor": sea_f,
                                         "pad": pad, "base_z": base_z, "azimuth_deg": float(camera_cfg["azimuth_deg"])}, indent=2))
@@ -129,7 +129,7 @@ def main() -> None:
     rgb = rgba[..., :3]
     water = R.get("water") or {}
     if water.get("enabled", True):
-        rgb = render.water_surface(rgb, depth, camera, meta, pad, exag, sea_f, R["sun"], water)
+        rgb = render.water_surface(rgb, depth, camera, meta, pad, exag, sea_f, R["sun"], water, cut=cut)
     rgb = compose.vignette(compose.key_background(np.dstack([rgb, rgba[..., 3]]), depth, page_style["background"]),
                            float(page_style["vignette"]))
     page = compose.Page(rgb, dpi=args.dpi)
@@ -159,7 +159,8 @@ def main() -> None:
             page.polyline(wl["px"], wl["py"], wl_vis, color=B.get("waterline_color", "#2f6fa3"), width=3.0, occluded_alpha=0.0)
             A = B.get("axis") or {}
             ax_geo = render.depth_axis(meta, pad, base_z, float(z[land].max()) if land.any() else 0.0, exag, sea_f,
-                                       float(A.get("step_land_m", 100)), float(A.get("step_sea_m", 50)), azimuth_deg=az)
+                                       float(A.get("step_land_m", 100)), float(A.get("step_sea_m", 50)), azimuth_deg=az,
+                                       max_ticks=int(A.get("max_ticks", 8)))
             ln = project(ax_geo["line"])
             axis_col = A.get("color", page_style["text"])
             page.segment(ln["px"][0], ln["py"][0], ln["px"][1], ln["py"][1], color=axis_col, width=3)

@@ -269,9 +269,11 @@ def check_profile(profile: pd.DataFrame, stations: pd.DataFrame) -> list[str]:
 # ----------------------------------------------------------------------------- figure
 
 def _draw_terrain(ax, s, z, land, ylo, C):
-    ax.fill_between(s, np.minimum(z, 0.0), 0.0, where=z < 0, color=C["water"], lw=0, zorder=1)
-    ax.fill_between(s, z, ylo, where=land, color=C["land"], lw=0, interpolate=True, zorder=2)
-    ax.fill_between(s, z, ylo, where=~land, color=C["sea_floor"], lw=0, interpolate=True, zorder=2)
+    """Water down to the floor, the ground under the whole line in the sea-floor colour, the land on top
+    (a land mask alone leaves a white wedge in each step where land turns to sea)."""
+    ax.fill_between(s, np.minimum(z, 0.0), 0.0, color=C["water"], lw=0, zorder=1)
+    ax.fill_between(s, z, ylo, color=C["sea_floor"], lw=0, zorder=2)
+    ax.fill_between(s, z, ylo, where=land, color=C["land"], lw=0, zorder=2.5)
     ax.plot(s, z, color=C["ground_line"], lw=0.9, zorder=3)
     ax.axhline(0.0, color=C["sea_level"], lw=0.7, ls=(0, (4, 3)), zorder=3)
 
@@ -321,8 +323,12 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
     zoom = P.get("land_zoom", {})
     use_zoom = bool(zoom.get("enabled", True)) and len(land_samples) > 0
     za, zb = float(zoom.get("from_m", s_min)), float(zoom.get("to_m", 120.0))
+    if use_zoom:                                   # every land sample in the detail panel (Helsingor 2 has one 3 km inland)
+        za = min(za, -float(land_samples["shore_distance_m"].max()) - 20.0)
     start = zb if use_zoom else s_min
     ranges = [(start, brk), (brk, s_max)] if s_max > 2 * brk else [(start, s_max)]
+    s_end = s_max + float(P.get("end_padding_frac", 0.0)) * (s_max - ranges[-1][0])   # room after the last station
+    ranges[-1] = (ranges[-1][0], s_end)
     ylo = min(float(z.min()) * 1.12, -10.0)
     in_main = s >= start
     z_main_max = float(z[in_main].max()) if in_main.any() else 0.0
@@ -358,7 +364,7 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
     for k, (ax, (a, b)) in enumerate(zip(axes, ranges)):
         m = (s >= a - 2 * step) & (s <= b + 2 * step)
         _draw_terrain(ax, s[m], z[m], land[m], ylo, C)
-        _draw_zones(ax, P["zones"], a, b, s_min, s_max, yhi, yspan, C)
+        _draw_zones(ax, P["zones"], a, b, s_min, s_end, yhi, yspan, C)
         for _, r in land_samples.iterrows():
             if a <= r.s <= b:
                 ax.plot(r.s, r.z, marker="v", ms=4.5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)
@@ -367,7 +373,7 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
         ax.set_ylim(ylo, yhi)
         from matplotlib.ticker import MaxNLocator
         ax.xaxis.set_major_locator(MaxNLocator(7, prune="upper" if k < len(ranges) - 1 else "lower"))
-        if b <= brk * 1.001:
+        if min(b, s_max) <= brk * 1.001:           # the end padding does not turn a metre panel into kilometres
             ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g} m"))
         else:
             ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v / 1000:g} km"))
@@ -388,11 +394,20 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
         ztop = max(float(z[m].max()) * 1.6, 12.0)
         zlo = -max(6.0, 0.35 * ztop)
         _draw_terrain(ax0, s[m], z[m], land[m], zlo, C)
-        _draw_zones(ax0, P["zones"], za, zb, s_min, s_max, ztop, ztop - zlo, C, min_frac=0.0, fontsize=5.6, stagger=0.11)
+        wide = zb - za > 1.2 * (float(zoom.get("to_m", 120.0)) - float(zoom.get("from_m", -320.0)))   # widened for a far sample
+        _draw_zones(ax0, P["zones"], za, zb, s_min, s_end, ztop, ztop - zlo, C, min_frac=0.05 if wide else 0.0,
+                    fontsize=5.6, stagger=0.11)
         placements = [(0, 6, "center"), (5, 14, "left"), (-5, 14, "right")]
+        prev = None                                # (panel fraction, dy) of the previous label: close neighbours stack up
         for i, (_, r) in enumerate(land_samples.sort_values("s", ascending=False).iterrows()):
             if za <= r.s <= zb:
                 dx, dy, ha = placements[i % len(placements)]
+                frac = (r.s - za) / (zb - za)
+                if prev is not None and abs(frac - prev[0]) < 0.12:
+                    dy = max(dy, prev[1] + 9)
+                if frac > 0.88 or frac < 0.12:     # near a panel edge: the label opens towards the panel
+                    dx, ha = (-5, "right") if frac > 0.88 else (5, "left")
+                prev = (frac, dy)
                 ax0.plot(r.s, r.z, marker="v", ms=5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)
                 ax0.annotate(f"{r.zone} {r.shore_distance_m:g} m", (r.s, r.z), xytext=(dx, dy), textcoords="offset points",
                              ha=ha, va="bottom", fontsize=5.6, color=C["sample"], zorder=7)

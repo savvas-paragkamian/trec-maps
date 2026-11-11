@@ -88,11 +88,15 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
     ax_dn = fig.add_subplot(gs[1], sharex=ax_up)
     ax_band = fig.add_subplot(gs[2], sharex=ax_up)
     ax_up.set_xscale("symlog", linthresh=float(S["linthresh_m"]), linscale=float(S["linscale"]))
-    ax_up.set_xlim(s_min - 5.0, s_max * 1.08)
+    to_axis = ax_up.xaxis.get_transform()                  # room after the last station, measured on the symlog axis
+    t0, t1 = to_axis.transform(np.array([s_min - 5.0, s_max]))
+    x_right = float(to_axis.inverted().transform(np.array([t1 + float(S.get("end_padding_frac", 0.0)) * (t1 - t0)]))[0])
+    ax_up.set_xlim(s_min - 5.0, x_right)
 
     # Above sea level: the land, its cover, the soil tubes, the boats.
     zu = np.clip(z, 0.0, None)
-    ax_up.fill_between(s, zu, 0.0, where=land, color=C["land"], lw=0, interpolate=True, zorder=2)
+    land_step = land | np.r_[False, land[:-1]] | np.r_[land[1:], False]   # the steps where land turns to sea too: no white wedge
+    ax_up.fill_between(s, zu, 0.0, where=land_step, color=C["land"], lw=0, zorder=2)
     pts = np.column_stack([s, zu])
     segs = np.stack([pts[:-1], pts[1:]], axis=1)
     keep = land[:-1] & land[1:]
@@ -105,11 +109,12 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
     ax_up.tick_params(bottom=False, labelbottom=False, labelsize=7)
     ax_up.set_ylabel("Elevation (m)", fontsize=8)
 
-    # Below sea level: the land body, the water column, the sea floor.
+    # Below sea level: the water column, the ground under the sea floor, the land body on top
+    # (zs is 0 on land, so the water and the sea-floor fills need no mask and leave no white wedge).
     zs = np.where(land, 0.0, np.minimum(z, 0.0))
-    ax_dn.fill_between(s, 0.0, zlo, where=land, color=C["land"], lw=0, interpolate=True, zorder=2)
-    ax_dn.fill_between(s, zs, 0.0, where=~land, color=C["water"], lw=0, interpolate=True, zorder=1)
-    ax_dn.fill_between(s, zs, zlo, where=~land, color=C["sea_floor"], lw=0, interpolate=True, zorder=2)
+    ax_dn.fill_between(s, zs, 0.0, color=C["water"], lw=0, zorder=1)
+    ax_dn.fill_between(s, zs, zlo, color=C["sea_floor"], lw=0, zorder=2)
+    ax_dn.fill_between(s, 0.0, zlo, where=land, color=C["land"], lw=0, zorder=2.5)
     ax_dn.plot(s, np.where(land, np.nan, np.minimum(z, 0.0)), color=C["ground_line"], lw=0.8, zorder=3)
     ax_dn.set_ylim(zlo, 0.0)
     for sp in ("top", "right"):
@@ -178,7 +183,7 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
     fig.canvas.draw()
     for zone in S["zones"]:
         a = s_min - 5.0 if zone["from"] is None else float(zone["from"])
-        b = s_max * 1.08 if zone["to"] is None else float(zone["to"])
+        b = x_right if zone["to"] is None else float(zone["to"])
         ax_band.axvspan(a, b, color=zone["color"], lw=0, zorder=0)
         xa, xb = ax_band.transData.transform([(a, 0.5), (b, 0.5)])[:, 0]
         xm = ax_band.transData.inverted().transform([((xa + xb) / 2, 0.0)])[0, 0]

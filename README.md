@@ -18,9 +18,9 @@ automatically, paired with their Tara stations (`make list` prints all 115). The
 
 | output | what |
 |---|---|
-| `output/<transect>/profile.png`, `.pdf` | elevation / depth along the transect path in three panels: the land transect in detail (own vertical scale), the nearshore in metres and the offshore in kilometres, with TREC zones, soil positions and the stations' sampling depths |
+| `output/<transect>/profile.png`, `.pdf` | elevation / depth along the transect path in three panels: the land transect in detail (own vertical scale, widened to the inland-most sample), the nearshore in metres and the offshore in kilometres, with TREC zones, soil positions and the stations' sampling depths; water in blue, the ground under the sea floor in brown, some room after the last station |
 | `output/<transect>/schematic.png`, `.pdf` | the TREC sampling-concept figure with real data: symmetric-log distance axis around the shoreline, ESA WorldCover along the land surface, soil and sediment tubes, water samples at their sampling depths, the inland / coastal transition / offshore band |
-| `output/<transect>/block_<quality>.png`, `.pdf` | path-traced solid block seen from the south at a low angle (a section through the coast rather than a map): land (WorldCover classes) and sea floor under a semi-transparent, wavy sea surface (the floor fades to the water colour with depth and shows through the waves), cut walls down to a base depth with the water column in cross-section, a sea-level line and a vertical axis in metres at the front corner, the path, the soil positions and a pin per Tara station (sea level, sampling depth, sea floor); vector overlay in the PDF. Depths are exaggerated twice as much as land (stated in the legend) |
+| `output/<transect>/block_<quality>.png`, `.pdf` | path-traced solid block seen from the south at a low angle (a section through the coast rather than a map): land (WorldCover classes) and sea floor under a semi-transparent, wavy sea surface (the floor fades to the water colour with depth and shows through the waves), brown cut walls (the ground under the sea floor) down to a base depth with the water column in cross-section above them, a sea-level line and a vertical axis in metres at the front corner, the path, the soil positions and a pin per Tara station (sea level, sampling depth, sea floor); vector overlay in the PDF. Depths are exaggerated twice as much as land (stated in the legend) |
 
 ## Setup
 
@@ -121,8 +121,10 @@ the nearest known depth (distance-weighted), and a 40 m Gaussian keeps the coars
 cells from reading as terraces. That nearshore floor is modelled, not measured. GLO-30
 heights are above EGM2008, EMODnet depths below LAT; the Saronic tidal range is about
 0.1 m, so the offset is ignored. In the 3D block the exaggerations (x3 land, x6 sea) shrink
-when the block would be taller than `render.max_block_height_frac` of the plate's shorter
-side, as in the fjords (Bergen: x1.25 / x2.5).
+when the block would be taller than `render.max_block_height_frac` (a quarter) of the plate's
+shorter side: 26 transects with hills or deep water, e.g. Anavyssos x2.1 / x4.2, Kotor 1
+x1.6 / x3.2, the Bergen fjords x1 / x2. The camera keeps the block's base above the legend
+row (`render.camera.max_bottom_frac`).
 
 ## Sources and citations
 

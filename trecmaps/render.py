@@ -34,9 +34,12 @@ def compass_unit(compass_deg: float) -> tuple[float, float]:
 
 
 def make_camera(dem_shape: tuple[int, int], cell_m: float, size_px: tuple[int, int], cfg: dict, exaggeration: float,
-                y_range: float = 0.0) -> dict:
+                y_range: float = 0.0, y_low: float | None = None) -> dict:
     """Pinhole camera on a compass bearing, placed so the plate's near edge spans `fill` of the frame width
-    and its depth plus the block's height (`y_range`, world units) fit `fill_vertical` of the frame height."""
+    and its depth plus the block's height (`y_range`, world units) fit `fill_vertical` of the frame height.
+    With `max_bottom_frac` and the block's base height `y_low` (world units), the camera is then lowered
+    until the base corners sit above that fraction of the frame height (the legend row), stepping back
+    when lifting the block would push its top above `min_top_frac` (the title)."""
     rows, cols = dem_shape
     ew, ns = cols * cell_m, rows * cell_m
     az = math.radians(float(cfg["azimuth_deg"]))
@@ -54,10 +57,31 @@ def make_camera(dem_shape: tuple[int, int], cell_m: float, size_px: tuple[int, i
     ux, uz = compass_unit(cfg["azimuth_deg"])
     # target shifts: "north" means away from the camera, "east" means to the camera's right
     away, right = cfg.get("target_shift_north_frac", 0.0) * plate_d, cfg.get("target_shift_east_frac", 0.0) * plate_w
-    target = (-ux * away + uz * right, cfg.get("target_lift_m", 0.0) * exaggeration, -uz * away - ux * right)
-    horiz = distance * math.cos(el)
-    origin = (target[0] + ux * horiz, target[1] + distance * math.sin(el), target[2] + uz * horiz)
-    return {"model": "pinhole", "origin": origin, "look_at": target, "up": (0.0, 1.0, 0.0), "fov_y": cfg["fov_y_deg"]}
+
+    def build(distance: float, drop: float) -> dict:
+        target = (-ux * away + uz * right, cfg.get("target_lift_m", 0.0) * exaggeration - drop, -uz * away - ux * right)
+        horiz = distance * math.cos(el)
+        origin = (target[0] + ux * horiz, target[1] + distance * math.sin(el), target[2] + uz * horiz)
+        return {"model": "pinhole", "origin": origin, "look_at": target, "up": (0.0, 1.0, 0.0), "fov_y": cfg["fov_y_deg"]}
+
+    camera, drop = build(distance, 0.0), 0.0
+    bottom, top = cfg.get("max_bottom_frac"), float(cfg.get("min_top_frac", 0.0) or 0.0)
+    if bottom and y_low is not None:
+        W, H = size_px
+        box = np.array([[sx * ew / 2, y, sz * ns / 2] for sx in (-1, 1) for sz in (-1, 1)
+                        for y in (y_low, y_low + y_range)], float)
+        for _ in range(40):
+            p = world_to_pixel(box, camera, W, H)
+            low = int(np.argmax(p["py"]))
+            excess = float(p["py"][low]) - float(bottom) * H           # pixels of the base below the limit
+            if excess <= 0.5:
+                break
+            if float(p["py"].min()) - excess < top * H:                # no room to lift it: step back
+                distance *= 1.03
+            else:                                                      # lower the camera: the block rises in the frame
+                drop += excess * 2.0 * float(p["zc"][low]) * math.tan(fov_y / 2) / (H * math.cos(el))
+            camera = build(distance, drop)
+    return camera
 
 
 def tile_grid(width: int, height: int, max_tile: int) -> tuple[int, int]:
@@ -85,7 +109,7 @@ def render_plate(dem: np.ndarray, albedo_rgba: np.ndarray, *, cell_m: float, siz
     assert albedo_rgba.shape[:2] == dem.shape, (albedo_rgba.shape, dem.shape)
     width, height = size_px
     camera = make_camera(dem.shape, cell_m, size_px, camera_cfg, exaggeration,
-                         y_range=float(dem.max() - dem.min()) * exaggeration)
+                         y_range=float(dem.max() - dem.min()) * exaggeration, y_low=float(dem.min()) * exaggeration)
     sun_az = compass_to_engine_azimuth(sun_cfg["azimuth_deg"])
     extra = {}
     if earth_model:
@@ -193,9 +217,13 @@ def exaggerate_sea(z: np.ndarray, sea_factor: float) -> np.ndarray:
 
 
 def pad_block(z: np.ndarray, albedo: np.ndarray, pad: int, base_z: float, cut_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Surround the heightmap with `pad` cells at `base_z`: the heightfield then drops to a base along its
-    rim, which renders as cut walls (the sea floor and the land as a solid block). The rim takes the cut colour."""
-    zp = np.pad(z, pad, mode="constant", constant_values=float(base_z)).astype(np.float32)
+    """Surround the heightmap with `pad` cells: the heightfield then drops to `base_z` along its rim, which
+    renders as cut walls (the sea floor and the land as a solid block). The rim takes the cut colour. With
+    pad > 1 the first ring repeats the edge heights, so the wall below it is the cut colour from top to
+    bottom (one ring blends the edge cells' land cover down the whole wall: vertical streaks)."""
+    inner = 1 if pad > 1 else 0
+    zp = np.pad(z, inner, mode="edge")
+    zp = np.pad(zp, pad - inner, mode="constant", constant_values=float(base_z)).astype(np.float32)
     ap = np.pad(albedo, ((pad, pad), (pad, pad), (0, 0)), mode="edge")
     ring = np.ones(zp.shape, bool)
     ring[pad:-pad, pad:-pad] = False
@@ -254,22 +282,17 @@ def front_left_corner(meta: dict, pad: int, azimuth_deg: float, offset_cells: fl
     return cx + lx * 1.5 * d + ux * 0.5 * d, cz + lz * 1.5 * d + uz * 0.5 * d
 
 
-def waterline(meta: dict, pad: int) -> np.ndarray:
-    """Sea level (Y = 0) along the four walls, as one closed loop of world points (N, 3)."""
-    o = block_outline(meta, pad)
-    south = np.column_stack([o["xs"], np.zeros_like(o["xs"]), np.full_like(o["xs"], o["z_south"])])
-    east = np.column_stack([np.full_like(o["zs"], o["x_east"]), np.zeros_like(o["zs"]), o["zs"][::-1]])
-    north = np.column_stack([o["xs"][::-1], np.zeros_like(o["xs"]), np.full_like(o["xs"], o["z_north"])])
-    west = np.column_stack([np.full_like(o["zs"], o["x_west"]), np.zeros_like(o["zs"]), o["zs"]])
-    loop = np.vstack([south, east, north, west, south[:1]])
-    return loop
-
-
 def depth_axis(meta: dict, pad: int, base_z: float, top_z: float, exaggeration: float, sea_factor: float,
-               step_land_m: float, step_sea_m: float, azimuth_deg: float = 180.0, offset_cells: float = 2.0) -> dict:
+               step_land_m: float, step_sea_m: float, azimuth_deg: float = 180.0, offset_cells: float = 2.0,
+               max_ticks: int = 8) -> dict:
     """A vertical axis just outside the block corner at the camera's front-left: its line (2, 3) and ticks
-    [(world point, label)]."""
-    cell = meta["cell_m"]
+    [(world point, label)]. A step that would give more than `max_ticks` ticks on either side of sea
+    level is coarsened (Kotor's 1700 m at 100 m steps was a stack of labels)."""
+    def coarser(step: float, span: float) -> float:
+        return next((float(s) for s in (step, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000)
+                     if s >= step and span / s <= max_ticks), step)
+
+    step_land_m, step_sea_m = coarser(step_land_m, max(top_z, 0.0)), coarser(step_sea_m, max(-base_z, 0.0))
     x, zc = front_left_corner(meta, pad, azimuth_deg, offset_cells)
     values = [0.0]
     v = -step_sea_m
@@ -284,7 +307,7 @@ def depth_axis(meta: dict, pad: int, base_z: float, top_z: float, exaggeration: 
               "0 (sea level)" if val == 0 else f"{val:+.0f}") for val in sorted(values)]
     line = np.array([[x, float(world_y(base_z, exaggeration, sea_factor)), zc],
                      [x, float(world_y(max(top_z, 0.0), exaggeration, sea_factor)), zc]])
-    return {"line": line, "ticks": ticks, "tick_dx": 0.8 * cell}
+    return {"line": line, "ticks": ticks}
 
 
 def camera_basis(camera: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -371,22 +394,6 @@ def water_alpha(depth_m, cfg: dict) -> np.ndarray:
     return float(cfg.get("max_alpha", 0.75)) * (1.0 - np.exp(-d / float(cfg.get("depth_scale_m", 40.0))))
 
 
-def water_tint(rgb: np.ndarray, depth: np.ndarray, camera: dict, exaggeration: float, sea_factor: float, cfg: dict) -> np.ndarray:
-    """Tint every rendered point below sea level (sea floor and cut walls alike) by its true depth, so the
-    water column reads as one blue body and its cross-section shows on the walls. Needs the depth AOV
-    (ray distance) and the camera to recover each pixel's hit point."""
-    h, w = depth.shape
-    origin = np.asarray(camera["origin"], float)
-    dirs = pixel_rays(camera, w, h)
-    hit = np.isfinite(depth)
-    y_hit = origin[1] + dirs[..., 1] * np.where(hit, depth, 0.0)
-    depth_m = np.where(hit & (y_hit < 0.0), -y_hit / (exaggeration * sea_factor), 0.0)
-    alpha = water_alpha(depth_m, cfg)
-    colour = hex_to_rgb(cfg.get("color", "#1b4f7a")) * 255.0
-    out = rgb.astype(np.float32) * (1.0 - alpha[..., None]) + colour[None, None, :] * alpha[..., None]
-    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
-
-
 def sea_legend_gradient(stops: list, lo: float, hi: float, water_cfg: dict | None, n: int = 256) -> np.ndarray:
     """(1, n, 3) strip of the sea floor albedo with the water tint applied, as it appears in the render."""
     depths = np.linspace(lo, hi, n)
@@ -440,13 +447,15 @@ def wave_slopes(X: np.ndarray, Z: np.ndarray, outline: dict, cfg: dict) -> tuple
 
 
 def water_surface(rgb: np.ndarray, depth: np.ndarray, camera: dict, meta: dict, pad: int, exaggeration: float,
-                  sea_factor: float, sun_cfg: dict, cfg: dict) -> np.ndarray:
+                  sea_factor: float, sun_cfg: dict, cfg: dict, cut: np.ndarray | None = None) -> np.ndarray:
     """Composite a semi-transparent, wavy sea surface at Y = 0 over everything seen through it.
 
     Per pixel: the ray's crossing of sea level inside the block (the surface point), the hit point
     below it (the floor, attenuated towards the water colour by its true depth and displaced a little
-    by the wave slope: refraction), a wave normal, Fresnel reflection of the sky, a sun glint. Cut
-    walls below sea level keep the depth tint only (the water column in cross-section)."""
+    by the wave slope: refraction), a wave normal and Fresnel reflection of the sky. Rays that pass
+    under sea level through the front of the block and hit the floor behind it get the depth tint only
+    (the water column in cross-section). The cut walls (`cut`, pixels with the wall albedo) are the
+    ground under the sea floor and keep their own colour."""
     h, w = depth.shape
     S = cfg.get("surface") or {}
     origin = np.asarray(camera["origin"], np.float32)
@@ -474,10 +483,13 @@ def water_surface(rgb: np.ndarray, depth: np.ndarray, camera: dict, meta: dict, 
     base = rgb.astype(np.float32)
     floor = np.stack([ndimage.map_coordinates(base[..., c], [r2, c2], order=1, mode="nearest") for c in range(3)], axis=-1)
     floor = np.where(water[..., None], floor, base)
-    a_body = water_alpha(depth_m, cfg)[..., None]
-    seen = floor * (1.0 - a_body) + body * a_body                     # applies to the walls too (cross-section)
+    a_body = water_alpha(depth_m, cfg)
+    if cut is not None:
+        a_body = np.where(cut & ~water, 0.0, a_body)                  # the wall below the sea floor is ground, not water
+    a_body = a_body[..., None]
+    seen = floor * (1.0 - a_body) + body * a_body
 
-    # the surface: wave normal, Fresnel, sky reflection shaded by the sun, glint
+    # the surface: wave normal, Fresnel, sky reflection shaded by the sun
     n = np.stack([-sx, np.ones_like(sx), -sz], axis=-1)
     n /= np.linalg.norm(n, axis=-1, keepdims=True)
     v = -dirs
