@@ -35,6 +35,18 @@ def _boat() -> "matplotlib.path.Path":
     return Path(verts, codes)
 
 
+def _clear_of(ann, placed: list, renderer, step: float = 7.0, tries: int = 12) -> None:
+    """Move an annotation (offset in points) up by `step` until it overlaps none of the `placed` display boxes,
+    then add its box to them (labels of positions a few metres apart stacked on top of each other)."""
+    dx, dy = ann.get_position()
+    for _ in range(tries):
+        if not any(ann.get_window_extent(renderer).overlaps(b) for b in placed):
+            break
+        dy += step
+        ann.set_position((dx, dy))
+    placed.append(ann.get_window_extent(renderer))
+
+
 def symlog_ticks(lo: float, hi: float) -> list[float]:
     """0 and a 1-3-10 sequence on both sides of the shoreline, within [lo, hi]."""
     vals = {0.0}
@@ -127,6 +139,7 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
     boat = _boat()
     tube_pt = float(S["tube_pt"])
     placements = [(0, 4, "center"), (4, 12, "left"), (-4, 12, "right")]
+    renderer, placed = fig.canvas.get_renderer(), []
     for i, (_, r) in enumerate(land_samples.sort_values("s", ascending=False).iterrows()):
         colour = C["sediment"] if "sediment" in str(r.medium).lower() else C["soil"]
         y = max(float(r.z), 0.0)
@@ -134,9 +147,13 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
         dx, dy, ha = placements[i % len(placements)]
         if i == 0:
             ha, dx = "left", 4
-        ax_up.annotate(f"{r.zone} {r.shore_distance_m:g} m\nn = {int(r.n_samples)}", (r.s, y),
-                       xytext=(dx, tube_pt + dy), textcoords="offset points", ha=ha, va="bottom", fontsize=5.6,
-                       color=C["text"], linespacing=1.1, zorder=7)
+        ann = ax_up.annotate(f"{r.zone} {r.shore_distance_m:g} m\nn = {int(r.n_samples)}", (r.s, y),
+                             xytext=(dx, tube_pt + dy), textcoords="offset points", ha=ha, va="bottom", fontsize=5.6,
+                             color=C["text"], linespacing=1.1, zorder=7)
+        if ann.get_window_extent(renderer).x0 < ax_up.get_window_extent().x0:   # over the y axis (Roscoff 2): open right
+            ann.set_ha("left")
+            ann.set_position((4, tube_pt + dy))
+        _clear_of(ann, placed, renderer)
 
     if shoreline_water:
         d0, d1 = float(shoreline_water["depth_min_m"]), float(shoreline_water["depth_max_m"])
@@ -145,9 +162,12 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
         y_sw = max(-(d0 + d1) / 2, floor_here * 0.5)   # the filled floor may be shallower than the real water here
         ax_dn.plot(s_sw, y_sw, marker="v", ms=7, mfc=C["water_sample"], mec=C["water_sample_edge"],
                    mew=0.8, ls="none", zorder=6)
-        ax_dn.annotate(f"shoreline water {d0:g}-{d1:g} m\nn = {shoreline_water['n_samples']}", (s_sw, y_sw),
-                       xytext=(6, -2), textcoords="offset points", ha="left", va="top", fontsize=5.6, color=C["text"],
-                       linespacing=1.1, zorder=7)
+        sw = ax_dn.annotate(f"shoreline water {d0:g}-{d1:g} m\nn = {shoreline_water['n_samples']}", (s_sw, y_sw),
+                            xytext=(6, -2), textcoords="offset points", ha="left", va="top", fontsize=5.6,
+                            color=C["text"], linespacing=1.1, zorder=7)
+        if sw.get_window_extent(renderer).x1 > ax_dn.get_window_extent().x1:   # near the right edge (Lorient 3)
+            sw.set_ha("right")
+            sw.set_position((-6, -2))
 
     fig.canvas.draw()
 
@@ -167,8 +187,20 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
         cast_txt = "sampled at " + ", ".join(f"{d:g}" for d in casts) + " m" if casts else ""
         label = "\n".join(t for t in (station_title(st), cast_txt, depth_txt, f"n = {int(st.n_samples)}") if t)
         ha, dx = align(ax_up, st.s)
-        ax_up.annotate(label, (st.s, 0.0), xytext=(dx, 24), textcoords="offset points", ha=ha, va="bottom",
-                       fontsize=5.8, color=C["text"], linespacing=1.15, zorder=7)
+        ann = ax_up.annotate(label, (st.s, 0.0), xytext=(dx, 24), textcoords="offset points", ha=ha, va="bottom",
+                             fontsize=5.8, color=C["text"], linespacing=1.15, zorder=7)
+        x0, x1 = ax_up.get_window_extent().x0, ax_up.get_window_extent().x1
+        for ha_try, dx_try in ((ha, dx), ("right", -4), ("left", 4)):   # a station label over another: the other side
+            ann.set_ha(ha_try)
+            ann.set_position((dx_try, 24))
+            box = ann.get_window_extent(renderer)
+            if box.x0 >= x0 and box.x1 <= x1 and not any(box.overlaps(b) for b in placed):
+                ha = ha_try
+                break
+        else:                                        # no free side: back to the first choice, moved up
+            ann.set_ha(ha)
+            ann.set_position((dx, 24))
+        _clear_of(ann, placed, renderer)
         for d in casts:
             ha_c = "right" if ha == "right" else "left"
             ax_dn.annotate(f"{d:g} m", (st.s, -d), xytext=(-7 if ha_c == "right" else 7, 0), textcoords="offset points",
@@ -182,12 +214,16 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
         ax_band.spines[sp].set_visible(False)
     fig.canvas.draw()
     for zone in S["zones"]:
-        a = s_min - 5.0 if zone["from"] is None else float(zone["from"])
-        b = x_right if zone["to"] is None else float(zone["to"])
+        a = s_min - 5.0 if zone["from"] is None else max(float(zone["from"]), s_min - 5.0)
+        b = x_right if zone["to"] is None else min(float(zone["to"]), x_right)
+        if b <= a:                                   # beyond the axis (no offshore band when the last station is < 1 km)
+            continue
         ax_band.axvspan(a, b, color=zone["color"], lw=0, zorder=0)
         xa, xb = ax_band.transData.transform([(a, 0.5), (b, 0.5)])[:, 0]
         xm = ax_band.transData.inverted().transform([((xa + xb) / 2, 0.0)])[0, 0]
-        ax_band.text(xm, 0.5, zone["name"], ha="center", va="center", fontsize=7, color=C["text"], fontweight="bold")
+        t = ax_band.text(xm, 0.5, zone["name"], ha="center", va="center", fontsize=7, color=C["text"], fontweight="bold")
+        if t.get_window_extent(fig.canvas.get_renderer()).width > xb - xa:
+            t.remove()                               # a band too narrow for its name stays unlabelled
     ax_band.xaxis.set_major_locator(FixedLocator(ticks))
     ax_band.xaxis.set_minor_locator(NullLocator())
     ax_band.xaxis.set_major_formatter(FuncFormatter(lambda v, _: fmt_distance(v)))
@@ -195,7 +231,8 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
     ax_band.set_xlabel("Distance from the shoreline along the transect path (symmetric-log scale; inland negative)",
                        fontsize=7.5, color=MUTED)
 
-    # Legend in the sky over the sea: land cover classes along the land, then the sample symbols.
+    # Legend in the sky over the sea (upper right unless labels are there: "best" avoids texts and lines):
+    # land cover classes along the land, then the sample symbols.
     present = [c for c, _ in sorted(((int(c), n) for c, n in zip(*np.unique(lc[land], return_counts=True))),
                                     key=lambda cn: -cn[1]) if c in classes] if land.any() else []
     handles = [Patch(facecolor=lut[c], edgecolor="none", label=classes[c][0]) for c in present]
@@ -206,7 +243,7 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
                label="water column samples (sampling depth)"),
         Line2D([], [], marker=boat, ms=14, mfc=C["boat"], mec=C["boat"], ls="none", label="Tara station"),
     ]
-    ax_up.legend(handles=handles, loc="upper right", fontsize=6, frameon=False, ncol=2, handletextpad=0.6,
+    ax_up.legend(handles=handles, loc="best", fontsize=6, frameon=False, ncol=2, handletextpad=0.6,
                  columnspacing=1.4, borderaxespad=0.2, title="ESA WorldCover 2021 along the land  |  samples",
                  title_fontsize=6.2, alignment="left")
 

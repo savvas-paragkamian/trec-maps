@@ -270,8 +270,11 @@ def check_profile(profile: pd.DataFrame, stations: pd.DataFrame) -> list[str]:
 
 def _draw_terrain(ax, s, z, land, ylo, C):
     """Water down to the floor, the ground under the whole line in the sea-floor colour, the land on top
-    (a land mask alone leaves a white wedge in each step where land turns to sea)."""
-    ax.fill_between(s, np.minimum(z, 0.0), 0.0, color=C["water"], lw=0, zorder=1)
+    (a land mask alone leaves a white wedge in each step where land turns to sea). The water stops one
+    sample into the land, so land below sea level (polders, saltpans: Texel 2, Split 4) stays dry."""
+    sea = ~np.asarray(land, bool)
+    wet = sea | np.r_[False, sea[:-1]] | np.r_[sea[1:], False]
+    ax.fill_between(s, np.minimum(z, 0.0), 0.0, where=wet, color=C["water"], lw=0, zorder=1)
     ax.fill_between(s, z, ylo, color=C["sea_floor"], lw=0, zorder=2)
     ax.fill_between(s, z, ylo, where=land, color=C["land"], lw=0, zorder=2.5)
     ax.plot(s, z, color=C["ground_line"], lw=0.9, zorder=3)
@@ -397,23 +400,29 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
         wide = zb - za > 1.2 * (float(zoom.get("to_m", 120.0)) - float(zoom.get("from_m", -320.0)))   # widened for a far sample
         _draw_zones(ax0, P["zones"], za, zb, s_min, s_end, ztop, ztop - zlo, C, min_frac=0.05 if wide else 0.0,
                     fontsize=5.6, stagger=0.11)
-        placements = [(0, 6, "center"), (5, 14, "left"), (-5, 14, "right")]
-        prev = None                                # (panel fraction, dy) of the previous label: close neighbours stack up
-        for i, (_, r) in enumerate(land_samples.sort_values("s", ascending=False).iterrows()):
-            if za <= r.s <= zb:
-                dx, dy, ha = placements[i % len(placements)]
-                frac = (r.s - za) / (zb - za)
-                if prev is not None and abs(frac - prev[0]) < 0.12:
-                    dy = max(dy, prev[1] + 9)
-                if frac > 0.88 or frac < 0.12:     # near a panel edge: the label opens towards the panel
-                    dx, ha = (-5, "right") if frac > 0.88 else (5, "left")
-                prev = (frac, dy)
-                ax0.plot(r.s, r.z, marker="v", ms=5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)
-                ax0.annotate(f"{r.zone} {r.shore_distance_m:g} m", (r.s, r.z), xytext=(dx, dy), textcoords="offset points",
-                             ha=ha, va="bottom", fontsize=5.6, color=C["sample"], zorder=7)
-        draw_stations(ax0, za, zb)
         ax0.set_xlim(za, zb)
         ax0.set_ylim(zlo, ztop)
+        placements = [(0, 6, "center"), (5, 14, "left"), (-5, 14, "right")]
+        rows = [(i, r) for i, (_, r) in enumerate(land_samples.sort_values("s", ascending=False).iterrows())
+                if za <= r.s <= zb]
+        marks = [ax0.plot(r.s, r.z, marker="v", ms=5, color=C["sample"], mec="white", mew=0.5, ls="none", zorder=6)[0]
+                 for _, r in rows]
+        renderer = fig.canvas.get_renderer()       # the markers and the drawn labels: a label over one moves up
+        placed = [m.get_window_extent(renderer) for m in marks]
+        for i, r in rows:
+            dx, dy, ha = placements[i % len(placements)]
+            frac = (r.s - za) / (zb - za)
+            if frac > 0.88 or frac < 0.12:     # near a panel edge: the label opens towards the panel
+                dx, ha = (-5, "right") if frac > 0.88 else (5, "left")
+            ann = ax0.annotate(f"{r.zone} {r.shore_distance_m:g} m", (r.s, r.z), xytext=(dx, dy),
+                               textcoords="offset points", ha=ha, va="bottom", fontsize=5.6, color=C["sample"], zorder=7)
+            for _ in range(8):
+                if not any(ann.get_window_extent(renderer).overlaps(b) for b in placed):
+                    break
+                dy += 8
+                ann.set_position((dx, dy))
+            placed.append(ann.get_window_extent(renderer))
+        draw_stations(ax0, za, zb)
         from matplotlib.ticker import MaxNLocator
         ax0.xaxis.set_major_locator(MaxNLocator(5))
         ax0.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g} m"))

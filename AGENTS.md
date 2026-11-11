@@ -75,9 +75,13 @@ data/raw, data/derived/<t>, output/<t>
   The ground under the sea floor is brown (`colors.sea_floor`, it was blue-grey and the section
   read as all water) and is filled under the whole line with the land drawn on top: a land/sea
   mask alone leaves a white wedge in every step where land turns to sea (wide in the schematic's
-  linear zone). The last panel ends `end_padding_frac` after the last station; the land panel
-  widens to the inland-most sample (it hid Asko 2's 805 m, Barcelona 4's 400 m, Helsingor 2's
-  3 km), without zone labels when widened.
+  linear zone). The water stops one sample into the land, so land below sea level stays dry
+  (Texel 2's polder, Split 4; it was painted as water). The last panel ends `end_padding_frac`
+  after the last station; the land panel widens to the inland-most sample (it hid Asko 2's 805 m,
+  Barcelona 4's 400 m, Helsingor 2's 3 km) and then labels only the zones that take 5% of it.
+  Sample labels are measured once drawn: one that overlaps a sample marker or an earlier label
+  moves up (Ancona 2, Lesina 1/3, St Andrews 2 had "inland"/"transition" printed over each other,
+  Thrace 1, Naples 2, Bilbao 1 a marker on a label).
 - **3D block as a solid**: the grid is rimmed with two cells (`render.block.pad_cells`): one at
   the edge heights, then the base depth, so the heightfield drops into cut walls of one colour
   (with a single ring the wall blended the edge cells' land cover from top to bottom: vertical
@@ -114,7 +118,13 @@ data/raw, data/derived/<t>, output/<t>
   their own vertical scales (elevation above, depth below); WorldCover classes as a ribbon on
   the land surface; soil tubes (green) and sediment tubes (orange) on the ground; water samples
   as cones at `cable_out` depth plus the land site's 0-3 m shoreline water samples; a boat per
-  Tara station; the Inland / Coastal transition zone / Offshore band.
+  Tara station; the Inland / Coastal transition zone / Offshore band. Labels are measured once
+  drawn (`_clear_of`): a land label over another moves up, one over the y axis opens to the right
+  (Roscoff 2's "shoreline 168 m" covered a tick label); a station label over another tries the
+  other side of its boat, then moves up (Naples 2, Pisa 1/4, Villefranche 1 were unreadable); the
+  legend is `loc="best"`, which keeps the upper right unless labels are there (it avoids texts).
+  A band beyond the axis is skipped (no "Offshore" when the last station is under 1 km: Bergen 1,
+  Salamina had the word cut at the figure edge), a band too narrow for its name is unlabelled.
 - **Land cover**: ESA WorldCover 2021 (the layer of the R repository), read as a window of the
   3-degree AWS COG, nearest-neighbour onto the grid, legend colours softened in HSV (0.72/0.96
   for 2D as in R, 0.55/0.92 under the path tracer), water class in the sea colour. The 3D block
@@ -137,7 +147,12 @@ data/raw, data/derived/<t>, output/<t>
   land left / sea right); Anavyssos and Thoriko 180°, their front view, which already runs
   TE_177 -> shore and shore -> TE_178 left to right, so `block_final_side` repeats it there.
   `render.side_overrides` and the beside-the-pin labels apply only when the view is turned.
-  `camera.side_azimuth_deg` in a transect's `render` overrides the choice.
+  `camera.side_azimuth_deg` in a transect's `render` overrides the choice. The soil label tries
+  beside the markers (turned or crowded views), above them, then below them, and takes the first
+  spot inside the frame that covers no label drawn before it (station labels, the axis and its
+  title), else above, shifted inside the frame. Riga 1 side ran off the left edge, Galway 2 side
+  covered TE_076, Anavyssos touched TE_176. A station label that would leave the right edge goes
+  to the left of its pin (Pisa 4 side). A label still off the frame is logged as a WARNING.
 - **TE_178 depth**: the site export says 22 m (sounder 22-35 m) but EMODnet has 76 m at the site
   position; the labels show both (`profile.floor_label`) whenever they differ by more than 25%.
   `check_profile` ignores the first 50 m off the shoreline (beach cells in a 30 m DEM).
@@ -243,6 +258,9 @@ data/raw, data/derived/<t>, output/<t>
   block corner nearest the camera, moved towards it and to the viewer's left (`front_left_corner`),
   so its labels stay on the background for diagonal views too; the sea-level line follows the edge
   nearest the camera (`front_edge`).
+- The cut walls of the raw path-traced render show faint horizontal striations and, on long walls
+  seen side-on, a faint lens-shaped shading just under sea level (Faro 3 side). Both are in forge3d's
+  raw output (`render_final*.npz`), not from the water post-processing; not fixed.
 - Shallow sandy floors mixed with turquoise read grey-beige until the water tint was made stronger
   in the first metres (`depth_scale_m` 8, `max_alpha` 0.85).
 - Dropbox: `PYTHONDONTWRITEBYTECODE=1` in the Makefile, `*conflicted copy*` ignored, no venv here.
@@ -259,19 +277,30 @@ python scripts/30_render_3d.py               # "median rendered/projected = 1.00
 make all Q=preview                           # every transect, about 40 min; failures land in output/failed.txt
 ```
 
-## Status and next steps (2026-11-09)
+## Status and next steps (2026-11-11)
 
-- Every transect has final figures (`make all Q=final`, 2026-11-02/03; 230 renders at 9 s). Code
-  and config are committed ("make maps for all transects of trec"); the figures and data are not
-  (ignored). The grids all match the current config (checked 2026-11-09).
-- Ten transects still have marine legs over land and need hand-set waypoints in
-  `auto.overrides` (see Sea routing): Baie de Veys 1, Banyuls 2, Helsingor 1, Rostock 1,
-  Sylt 2, Roscoff 3, Thrace 4, Kristineberg 3, Bilbao 2, La Tremblade 1. After a waypoint:
-  `make maps T=<name> Q=final` (the bathymetry and the windows re-fetch if the box grew).
-- Only about a dozen of the 109 generated figures were reviewed by eye; a review pass would look
-  at label collisions on short legs (Naples 2), the station labels over hills (Kotor 1), the
-  Wadden Sea flats counted as land (Sylt 2, Roscoff 3), and whether the 2 km offshore extension
-  is wanted for the 13 station-less transects.
+- Every transect has final figures from the 2026-11-11 batch (`make all Q=final`, 115 transects,
+  none failed, 82 min), the blocks recomposed and the 2D figures redrawn after the label fixes.
+  The committed code ("update the colors and minor tweaks") predates the label fixes in
+  `30_render_3d.py`, `profile.py` and `schematic.py`; the figures and data are ignored.
+- All 115 transects were reviewed on contact sheets (blocks, side views, profiles, schematics)
+  on 2026-11-11. Left as they are:
+  - Marine legs over land, need hand-set waypoints in `auto.overrides` (see Sea routing):
+    Baie de Veys 1, Banyuls 2, Helsingor 1, Rostock 1, Sylt 2, Roscoff 3, Thrace 4,
+    Kristineberg 3, Bilbao 2, La Tremblade 1, and Asko 3 (land at 150-250 m off the shoreline).
+    After a waypoint: `make maps T=<name> Q=final` (the windows re-fetch if the box grew).
+  - Flats and filled floors near 0 m (EMODnet near 0 or tidal flats): Sylt 1/2, Klaipeda 1,
+    Lorient 3, Roscoff 1/3, Porto 1, La Tremblade 1, Southampton 1, Baie de Veys 2, St Andrews 1;
+    possibly Porto 2, Lorient 1, Villefranche 1 (seen on the sheets only).
+  - Schematic: the "shoreline water 0-3 m" cone sits in the land body where the DEM is land at
+    its position (Bergen 1/2, Texel 1/2, Pisa 2, Malaga 2, Sylt 1, Roscoff 2, Kristineberg 1,
+    Calabria 2, Thrace 2, Turku 1, Split 2); Lorient 3's shoreline water lies 1 km out, at the
+    station. Close cast depths print over each other (Pisa 4: 99.8, 100, 101, 102.3 m).
+  - Data quirks: Ancona 2's inland position is 2.3 km from the shore with a shore distance of
+    205 m; TE_178 recorded 22 m vs 76 m in EMODnet (labelled).
+  - Kotor 1 station labels over the mountains; Psatha's soil and TE_172 labels touch; in the
+    Sylt 2 and Banyuls 2 schematics land spikes on the marine leg cross the station label.
+  - Whether the 2 km offshore extension is wanted for the 13 station-less transects.
 - Candidates for deletion in `data/`: the two older exports (`TREC_sample_data_export.xlsx`,
   `TREC_sample_data_athens_marine_metagenome.xlsx`) and the four full GLO-30 tiles in
   `data/raw/dem` (57 MB); nothing reads them.
@@ -393,3 +422,37 @@ counted as land on the last stretch), Thrace 4, Kristineberg 3, Bilbao 2, La Tre
 Not reviewed: most of the 109 generated figures were only spot-checked (Roscoff 1-2, Bergen 1,
 Tallinn 1, Texel 2, Naples 2, Barcelona 2, Kotor 1, Aarhus 1, Sylt 2, Helsingor 2); label
 collisions near short legs (Naples 2) are left for per-transect overrides.
+
+### 2026-11-11 — review of all maps, lower exaggeration, brown ground, room after the last station
+
+Request: "check the repo rigorously, 3 times. And review the maps for mistakes. reduce the
+exaggeration of vertical in cases. also in vertical profile leave some space on the right after
+the sample point. change the color of the bottom of the see to brownish because it looks like it
+is all sea. make it simple edits" then "show me a few of the new maps"
+
+Done:
+- Exaggeration: the block-height cap went from 0.45 to 0.25 of the plate's shorter side.
+  26 transects are now below x3, for example Anavyssos x2.1, Kotor 1 x1.6, Bergen and Psatha x1.
+- Brown ground under the sea floor: the 2D figures use `colors.sea_floor` #a98b68, filled under
+  the whole line. The 3D walls use `cut_face_color` #7d6450 and are no longer tinted as water.
+- Room after the last station: `end_padding_frac` 0.04 in the profile, 0.05 in the schematic.
+- Fixed in the three checks:
+  - The white wedges at land/sea steps.
+  - The land panel hiding samples beyond the path.
+  - The vertical streaks on the block walls (now a two-cell rim).
+  - Blocks over the legend row (`max_bottom_frac`).
+  - Axis steps not in the coarsening list.
+  - Dead code (`waterline`, `water_tint`, `tick_dx`).
+- Fixed after the full batch:
+  - Labels off the frame in the side views: Riga 1's soil label and Pisa 4's TE_132 label.
+  - Soil labels over station labels: Galway 2 side (TE_076), Anavyssos (TE_176).
+  - Water painted over polders in the profile.
+  - Overlapping labels in the profile land panel and the schematic, with the legend moved off them.
+  - "Offshore" printed at the figure edge.
+  - Lorient 3's shoreline-water label cut off.
+- Batch: `make all Q=final`, 115 transects, none failed. Then all 230 blocks were recomposed
+  from the cached renders and all 2D figures redrawn. Logs:
+  - `output/batch_final_2026-11-11.log`
+  - `output/recompose_2026-11-11.log`
+  - `output/redraw2d_2026-11-11.log`
+- Every figure was reviewed on contact sheets. What is left is under Status.

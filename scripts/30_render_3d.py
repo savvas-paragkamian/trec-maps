@@ -194,8 +194,11 @@ def main() -> None:
             label = "\n".join(t for t in (P.station_title(st), cast_txt, depth_txt, f"{int(st.n_samples)} samples") if t)
             pins.append((sx, sy))
             if rotated:                                      # the sea is on the right: label beside the pin, on the water
-                page.text(sx + page.px(34), sy, label, size=34, color=page_style["station"], ha="left", va="center",
-                          linespacing=1.15, weight="bold")
+                lab = page.text(sx + page.px(34), sy, label, size=34, color=page_style["station"], ha="left",
+                                va="center", linespacing=1.15, weight="bold")
+                if lab.get_window_extent(page.fig.canvas.get_renderer()).x1 > W - page.px(40):
+                    lab.set_ha("right")                      # off the right edge (Pisa 4 side): the other side of the pin
+                    lab.set_x(sx - page.px(34))
             else:
                 ha = "right" if sx > 0.72 * W else "left"    # near the right edge: label on the water side
                 below = sy < 0.42 * H                        # a pin high in the frame: label under it, off the land behind
@@ -212,12 +215,30 @@ def main() -> None:
             soil_label = (f"{tcfg['land_site']} soil transect\n{len(land_samples)} positions, "
                           f"{land_samples.shore_distance_m.min():g}-{land_samples.shore_distance_m.max():g} m from the shore")
             crowded = any(abs(px - pr["px"][i]) < 0.25 * W and abs(py - pr["py"][i]) < 0.16 * H for px, py in pins)
-            if rotated or crowded:                           # the land is on the left (or a station pin is close by):
-                page.text(pr["px"][i] - page.px(34), pr["py"][i], soil_label, size=34, color=page_style["sample"],
-                          ha="right", va="center", linespacing=1.15, weight="bold")   # label beside the markers, on the land
-            else:                                            # above the inland-most position
-                page.text(pr["px"][i], pr["py"][i] - page.px(44), soil_label, size=34, color=page_style["sample"],
-                          ha="center", va="bottom", linespacing=1.15, weight="bold")
+            renderer, margin = page.fig.canvas.get_renderer(), page.px(40)
+            avoid = [t.get_window_extent(renderer) for t in page.ax.texts]   # station labels, the axis and its title
+            x, y = pr["px"][i], pr["py"][i]
+            above = (x, y - page.px(44), "center", "bottom")
+            # beside the markers on the land when the land is on the left (or a station pin is close by), else
+            # above the inland-most position; then below it; the first spot inside the frame that covers no
+            # other label wins (Riga 1 side ran off the frame, Galway 2 side covered TE_076), else above
+            spots = ([(x - page.px(34), y, "right", "center")] if rotated or crowded else []) + \
+                [above, (x, y + page.px(44), "center", "top"), above]
+            lab = page.text(x, y, soil_label, size=34, color=page_style["sample"], linespacing=1.15, weight="bold")
+            for px_, py_, ha_, va_ in spots:
+                lab.set_position((px_, py_))
+                lab.set_ha(ha_)
+                lab.set_va(va_)
+                box = lab.get_window_extent(renderer)
+                if box.x0 >= margin and box.x1 <= W - margin and not any(box.overlaps(b) for b in avoid):
+                    break
+            if ha_ == "center":                              # kept inside the frame
+                lab.set_x(px_ + max(margin - box.x0, 0.0) - max(box.x1 - (W - margin), 0.0))
+        renderer = page.fig.canvas.get_renderer()
+        for t in page.ax.texts:                              # a label off the page is a placement bug: say so
+            box = t.get_window_extent(renderer)
+            if box.x0 < 0 or box.x1 > W or box.y0 < 0 or box.y1 > H:
+                log(f"WARNING: label {t.get_text().splitlines()[0]!r} runs off the frame")
 
     lo_sea = math.floor(float(z.min()) / 25) * 25
     hi_land = max(25.0, math.ceil(float(z[land].max()) / 25) * 25) if land.any() else 25.0
