@@ -10,7 +10,7 @@ def main() -> None:
     args = parser(__doc__).parse_args()
     params, tcfg = setup(args)
     log = lambda m: C.log("profile", m)
-    derived, out = C.transect_dirs(params, tcfg["name"])
+    derived, out, stem = C.transect_dirs(params, tcfg)
     points, land, stations = sites.load_path(params, tcfg)
     grid = terrain.load_grid(derived)
     if params["profile"].get("route_around_land"):
@@ -28,8 +28,9 @@ def main() -> None:
     prof.to_csv(derived / "profile.csv", index=False)
     land_samples.to_csv(derived / "land_samples.csv", index=False)
     placed.to_csv(derived / "stations.csv", index=False)
-    P.plot_profile(prof, land_samples, placed, params, tcfg, out / "profile.png", out / "profile.pdf")
-    log(f"wrote {out / 'profile.png'} and .pdf")
+    png = out / f"{stem}_profile.png"
+    P.plot_profile(prof, land_samples, placed, params, tcfg, png, png.with_suffix(".pdf"))
+    log(f"wrote {png} and .pdf")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 """The TREC sampling-concept figure drawn with real data: one land-sea section on a symmetric-log
 distance axis around the shoreline, land cover along the surface, soil and sediment tubes on land,
-water samples in the water column at their sampling depths, and the inland / coastal transition /
-offshore band. Vertical scales differ above and below sea level (two stacked axes)."""
+water samples in the water column at their sampling depths, a band of the Coastal Zones classes
+along the path and the inland / coastal transition / offshore band. Vertical scales differ above
+and below sea level (two stacked axes)."""
 from __future__ import annotations
 
 import math
@@ -10,8 +11,8 @@ import numpy as np
 import pandas as pd
 
 from .config import hex_to_rgb
-from .profile import casts_of, floor_label, station_title
-from .render import landcover_lut
+from .profile import casts_of, class_legend, draw_class_strip, floor_label, station_title
+from .render import landcover_lut, soften_hex
 
 MUTED = "#5d6670"
 
@@ -93,12 +94,20 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
     s_min, s_max = float(s.min()), float(s.max())
     ztop = max(float(z[land].max()) * 1.6, 12.0) if land.any() else 12.0
     zlo = min(float(z.min()) * 1.12, -10.0)
+    # Copernicus Coastal Zones along the path: a band between the section and the zone band, when the transect has the layer
+    CZ = params["sources"]["coastal_zones"]
+    cz = profile["coastal_zone"].to_numpy(int) if "coastal_zone" in profile.columns else np.zeros(len(s), int)
+    cz_colours = {int(c): soften_hex(v[1], CZ.get("soften", [1, 1])) for c, v in CZ["classes"].items()}
+    cz_band = float(S.get("coastal_zones_band", 0.0)) if np.isin(cz, list(cz_colours)).any() else 0.0
 
     fig = plt.figure(figsize=(F["width_in"], F["height_in"]))
-    gs = fig.add_gridspec(3, 1, height_ratios=[1.0, 1.7, 0.14], hspace=0.0, left=0.06, right=0.985, top=0.86, bottom=0.12)
+    ratios = [1.0, 1.7] + ([cz_band] if cz_band else []) + [0.14]
+    gs = fig.add_gridspec(len(ratios), 1, height_ratios=ratios, hspace=0.0, left=0.06, right=0.985, top=0.86, bottom=0.12)
     ax_up = fig.add_subplot(gs[0])
     ax_dn = fig.add_subplot(gs[1], sharex=ax_up)
-    ax_band = fig.add_subplot(gs[2], sharex=ax_up)
+    ax_cz = fig.add_subplot(gs[2], sharex=ax_up) if cz_band else None
+    ax_band = fig.add_subplot(gs[-1], sharex=ax_up)
+    subtitle = fig.text(0.01, 0.925, tcfg.get("subtitle", ""), fontsize=7.5, va="top", color=MUTED)
     ax_up.set_xscale("symlog", linthresh=float(S["linthresh_m"]), linscale=float(S["linscale"]))
     to_axis = ax_up.xaxis.get_transform()                  # room after the last station, measured on the symlog axis
     t0, t1 = to_axis.transform(np.array([s_min - 5.0, s_max]))
@@ -206,24 +215,38 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
             ax_dn.annotate(f"{d:g} m", (st.s, -d), xytext=(-7 if ha_c == "right" else 7, 0), textcoords="offset points",
                            ha=ha_c, va="center", fontsize=5.6, color=C["cast_line"], zorder=7)
 
-    # The band: inland / coastal transition zone / offshore, labelled at the visual midpoints.
+    # The bands: the Coastal Zones classes along the path, then inland / coastal transition zone / offshore;
+    # names at the visual midpoints (the axis is symlog), dropped where a segment is too narrow for its name.
     ticks = symlog_ticks(s_min, s_max)
-    ax_band.set_ylim(0, 1)
-    ax_band.set_yticks([])
-    for sp in ("top", "right", "left"):
-        ax_band.spines[sp].set_visible(False)
+    for ax in (ax_cz, ax_band):
+        if ax is not None:
+            ax.set_ylim(0, 1)
+            ax.set_yticks([])
+            for sp in ("top", "right", "left"):
+                ax.spines[sp].set_visible(False)
     fig.canvas.draw()
+
+    def band_label(ax, a, b, name, pad=0.0, **kw):
+        xa, xb = ax.transData.transform([(a, 0.5), (b, 0.5)])[:, 0]
+        xm = ax.transData.inverted().transform([((xa + xb) / 2, 0.0)])[0, 0]
+        t = ax.text(xm, 0.5, name, ha="center", va="center", color=C["text"], zorder=5, **kw)
+        if t.get_window_extent(fig.canvas.get_renderer()).width > xb - xa - pad:
+            t.remove()
+
+    if ax_cz is not None:
+        ax_cz.tick_params(bottom=False, labelbottom=False)
+        ax_cz.spines["bottom"].set_visible(False)
+        for a, b, code in draw_class_strip(ax_cz, s, cz, cz_colours, 1.0, C["ground_line"]):
+            band_label(ax_cz, a, b, CZ["classes"][code][0], pad=6.0, fontsize=5.8)
+        class_legend(fig, cz, cz_colours, CZ["classes"], "Copernicus Coastal Zones 2018 along the path, land to sea "
+                     "(the band under the section)", subtitle, MUTED, right=0.985)
     for zone in S["zones"]:
         a = s_min - 5.0 if zone["from"] is None else max(float(zone["from"]), s_min - 5.0)
         b = x_right if zone["to"] is None else min(float(zone["to"]), x_right)
         if b <= a:                                   # beyond the axis (no offshore band when the last station is < 1 km)
             continue
         ax_band.axvspan(a, b, color=zone["color"], lw=0, zorder=0)
-        xa, xb = ax_band.transData.transform([(a, 0.5), (b, 0.5)])[:, 0]
-        xm = ax_band.transData.inverted().transform([((xa + xb) / 2, 0.0)])[0, 0]
-        t = ax_band.text(xm, 0.5, zone["name"], ha="center", va="center", fontsize=7, color=C["text"], fontweight="bold")
-        if t.get_window_extent(fig.canvas.get_renderer()).width > xb - xa:
-            t.remove()                               # a band too narrow for its name stays unlabelled
+        band_label(ax_band, a, b, zone["name"], fontsize=7, fontweight="bold")
     ax_band.xaxis.set_major_locator(FixedLocator(ticks))
     ax_band.xaxis.set_minor_locator(NullLocator())
     ax_band.xaxis.set_major_formatter(FuncFormatter(lambda v, _: fmt_distance(v)))
@@ -248,10 +271,10 @@ def plot_schematic(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: 
                  title_fontsize=6.2, alignment="left")
 
     fig.text(0.01, 0.975, tcfg["title"], fontsize=11, fontweight="bold", va="top", color=C["text"])
-    fig.text(0.01, 0.925, tcfg.get("subtitle", ""), fontsize=7.5, va="top", color=MUTED)
-    fig.text(0.985, 0.008, "Vertical scales differ above and below sea level. Land: " + params["sources"]["dem"]["citation"]
+    fig.text(0.985, 0.008, (f"Land cover / land use (the band): {CZ['citation']}.\n" if ax_cz is not None else "")
+             + "Vertical scales differ above and below sea level. Land: " + params["sources"]["dem"]["citation"]
              + ". Sea floor: " + params["sources"]["bathymetry"]["citation"] + ". Land cover: " + LC["citation"] + ".",
-             fontsize=4.8, ha="right", va="bottom", color=MUTED, wrap=True)
+             fontsize=4.8, ha="right", va="bottom", color=MUTED, wrap=True, linespacing=1.3)
     fig.savefig(out_png, dpi=F["dpi"])
     fig.savefig(out_pdf)
     plt.close(fig)

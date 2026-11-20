@@ -174,18 +174,46 @@ def landcover_lut(classes: dict, soften, water: str, fallback: str) -> np.ndarra
     return lut
 
 
-def make_albedo(z: np.ndarray, land: np.ndarray, cfg: dict, landcover: np.ndarray | None = None,
-                lc_cfg: dict | None = None) -> np.ndarray:
-    """Land cover (or hypsometric tint) on land, depth tint at sea, a light shoreline ring; linear RGB, alpha 1."""
-    use_classes = (cfg.get("land_mode", "hypsometric") == "landcover" and landcover is not None
-                   and lc_cfg is not None and bool((landcover > 0).any()))
-    if use_classes:
-        classes = {int(k): (v[0], v[1]) for k, v in lc_cfg["classes"].items()}
-        lut = landcover_lut(classes, lc_cfg.get("soften_3d", [0.55, 0.92]), lc_cfg.get("water_color", "#a9c6d8"),
-                            lc_cfg.get("fallback_color", "#cfc6b4"))
-        land_rgb = lut[landcover]
-    else:
-        land_rgb = ramp_rgb(z, cfg["land"])
+def land_layer(mode: str, grid: dict, sources: dict) -> dict | None:
+    """The class layer that colours the block's land. `coastal_zones`: Copernicus Coastal Zones 2018, or
+    WorldCover where the transect has none (outside the layer's coverage, not fetched); `landcover`: ESA
+    WorldCover; anything else, or no classes on the land at all: None (the hypsometric ramp).
+    Returns the layer's key, its code raster, {code: softened sRGB}, {code: label}, the colour of cells
+    without a class, the citation and each class's share of the land.
+    The block's land is the DEM's and its coastline lies a cell or two off the layer's, so a land cell the
+    layer calls sea (`sea_classes`) takes the nearest other class when one lies within `shore_fill_m`."""
+    land = grid["land"]
+    for key in {"coastal_zones": ["coastal_zones", "landcover"], "landcover": ["landcover"]}.get(mode, []):
+        codes, S = grid[key], sources[key]
+        if not (codes[land] > 0).any():
+            continue
+        sea = np.isin(codes, S.get("sea_classes", []))
+        if (land & sea).any() and (~sea & (codes > 0)).any():
+            dist, nearest = ndimage.distance_transform_edt(sea | (codes == 0), return_indices=True)
+            near = dist * float(grid["meta"]["cell_m"]) <= float(S.get("shore_fill_m", 0.0))
+            codes = np.where(land & sea & near, codes[tuple(nearest)], codes)
+        colours = {int(c): soften_hex(v[1], S.get("soften_3d", [0.55, 0.92])) for c, v in S["classes"].items()}
+        if key == "landcover":
+            colours[80] = hex_to_rgb(S.get("water_color", "#a9c6d8"))
+        classes, counts = np.unique(codes[land], return_counts=True)
+        return {"key": key, "codes": codes, "colours": colours, "labels": {int(c): v[0] for c, v in S["classes"].items()},
+                "fallback": hex_to_rgb(sources["landcover"].get("fallback_color", "#cfc6b4")), "citation": S["citation"],
+                "fractions": {int(c): float(n) / land.sum() for c, n in zip(classes, counts) if c > 0}}
+    return None
+
+
+def paint_classes(codes: np.ndarray, colours: dict, fallback: np.ndarray) -> np.ndarray:
+    """sRGB (..., 3) of an integer class raster from {code: rgb}; other codes take `fallback`."""
+    keys = np.array(sorted(colours))
+    table = np.vstack([np.array([colours[k] for k in keys], np.float32), np.asarray(fallback, np.float32)[None, :]])
+    i = np.minimum(np.searchsorted(keys, codes), len(keys) - 1)
+    return table[np.where(keys[i] == codes, i, len(keys))]
+
+
+def make_albedo(z: np.ndarray, land: np.ndarray, cfg: dict, layer: dict | None = None) -> np.ndarray:
+    """A class layer (`land_layer`) or the hypsometric tint on land, depth tint at sea, a light shoreline ring;
+    linear RGB, alpha 1."""
+    land_rgb = paint_classes(layer["codes"], layer["colours"], layer["fallback"]) if layer else ramp_rgb(z, cfg["land"])
     rgb = np.where(land[..., None], land_rgb, ramp_rgb(z, cfg["sea"]))
     shore = cfg.get("shoreline") or {}
     if int(shore.get("width_cells", 0)) > 0:

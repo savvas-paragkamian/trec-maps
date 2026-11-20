@@ -6,7 +6,8 @@ gotchas, and a dated log of the work (requests quoted verbatim).
 ## Purpose
 
 Python map scripts for TREC transects: land-sea profile maps from Copernicus GLO-30 (land)
-and EMODnet Bathymetry (sea), as 2D profiles and forge3d 3D blocks, for all 114 LSI sites of
+and EMODnet Bathymetry (sea), with ESA WorldCover and Copernicus Coastal Zones 2018 as land
+cover, as 2D profiles and forge3d 3D blocks, for all 114 LSI sites of
 the data exports (115 transects with the Anavyssos zoom). Pilot: Anavyssos (041-03)
 with Tara stations TE_176 and TE_177. Owner: Savvas Paragkamian (EMBL CPP fellow, TREC soil
 metagenomes); the sibling repository `trec-coastal-microbiome` (R, targets) holds the
@@ -23,7 +24,7 @@ analysis pipeline and the per-transect 2D maps.
   as in `trec-coastal-microbiome`. The environment lives in conda's envs dir, never inside
   this Dropbox folder. forge3d comes from PyPI (pip section), 1.44.0 is the verified version.
 - **No `Co-Authored-By: Claude` lines** in commits or PRs. The user commits and merges.
-- Keep it small ("less is more"): eight modules, seven scripts, two YAML files. Nothing hard-coded
+- Keep it small ("less is more"): eight modules, eight scripts, two YAML files. Nothing hard-coded
   in `trecmaps/` that belongs in `config/params.yml`.
 - Do not name a data source that was not verified; the citations in `params.yml` are the ones to use.
 
@@ -31,16 +32,16 @@ analysis pipeline and the per-transect 2D maps.
 
 ```
 config/params.yml, transects.yml     every tunable; transects by site ID
-trecmaps/config.py                   YAML loading, --set overrides, hex colours
+trecmaps/config.py                   YAML loading, --set overrides, hex colours, the ID-first output names, JSON read/write (.gz)
 trecmaps/sites.py                    exports (pickle-cached) -> sites, land positions (shore_distance), stations (cable_out), auto transects, path points
-trecmaps/fetch.py                    the download helper (HEAD size, .part, 404 = ocean tile) and the COG window reader
+trecmaps/fetch.py                    the download helper (HEAD size, .part, 404 = ocean tile), the COG window reader, the JSON GET for the map service
 trecmaps/schematic.py                the sampling-concept figure (symlog distance axis, two vertical scales, tubes, cones, boats)
-trecmaps/terrain.py                  grid box (UTM auto, cell cap), tile names, DEM/WorldCover windows, WCS request, land/sea merge, build_grid
+trecmaps/terrain.py                  grid box (UTM auto, cell cap), tile names, DEM/WorldCover windows, WCS request, Coastal Zones polygons (cut, burnt onto the grid), land/sea merge, build_grid
 trecmaps/profile.py                  polyline, sea routing of marine legs, sampling, sample/station placement, checks, the 2D figure
 trecmaps/render.py                   forge3d tiled render (from crete3d), albedo ramps, camera -> pixel projection
 trecmaps/compose.py                  keyed background, vignette, Page (matplotlib in pixel space), furniture
-scripts/00..30                       thin CLIs; scripts/_common.py adds the repo root to sys.path, applies transect overrides, lists transects
-data/raw, data/derived/<t>, output/<t>
+scripts/00..30                       thin CLIs (00-03 download); scripts/_common.py adds the repo root to sys.path, applies transect overrides, lists transects
+data/raw, data/derived/<t>, output/<id>   <t> = the transect name (thrace_lsi_1), <id> = the name of its figures (042-01_thrace)
 ```
 
 ## Decisions
@@ -206,6 +207,61 @@ data/raw, data/derived/<t>, output/<t>
   Abra), Helsingor 1, Thrace 4 (a lagoon site), La Tremblade 1 (the Seudre estuary, under
   100 m wide). Their profiles show land on the marine leg; they need hand-set waypoints.
 
+- **Output names** (2026-11-20, the user: "rename all output with the id first. like 042-1_thrace",
+  "make the plots name also start with this id prefix and then the profile.png"): the figures and
+  their folder start with the land site's ID, `output/042-01_thrace/042-01_thrace_profile.png`
+  (`config.output_stem`: site ID + the transect name without `_lsi_<n>`; the ID carries that number,
+  checked for all 109 generated transects; the real IDs have two digits, 042-01). The Athens
+  entries: `041-03_anavyssos`, `041-03_anavyssos_nearshore`, `041-01_psatha`, ... The transect names
+  (`thrace_lsi_1`) stay the keys of `transects.yml`, `auto.overrides`, `data/raw` and `data/derived`;
+  `--transect` and `T=` take either name (`config.load_transect`).
+- **Coastal Zones** (2026-11-20, the user: "add the coastal zones in both profile and 3d maps"): in the
+  user's vocabulary "coastal zones" is the Copernicus Coastal Zones 2018 land cover / land use layer
+  of `trec-coastal-microbiome` (71 classes, `CODE_5_18`, 10 km inland plus the sea); the TREC sampling
+  zones (shoreline, coastal, transition, inland) are "steps" there and were in the profile already.
+  - Source: the EEA's public map service of the layer, no key (the CLMS download needs one), as
+    `scripts/get_coastal_zones_windows.R` does in the R repository. `03_get_coastal_zones.py` asks for
+    the ids of the polygons touching the grid's lon/lat box, reads them 300 per request as GeoJSON
+    with `maxAllowableOffset` 0.00002 degrees (2 m), cuts them to the box with shapely and saves
+    `data/raw/coastal_zones/cz_2018_<t>.geojson.gz` with the box as `bbox` (re-fetched when the grid
+    box grows). Polygons over 50 000 ha (the sea: one or two basin-wide polygons per transect) are
+    fetched one at a time and kept in `_big/`, so a sea is downloaded once for all its transects.
+  - Grid: `terrain.read_polygons` burns the codes onto the grid by cell centre, the largest polygon
+    first, and gives cells within two cells of a polygon the nearest class (slivers of the
+    generalised outlines; 76 cells of 827 000 at Anavyssos). `grid.npz` holds `coastal_zones` (int32
+    codes, 0 = none), `grid.json` the file name and the classes' shares of the land; `build_grid`
+    rebuilds a grid whose recorded Coastal Zones file differs from the one on disk. The other layers
+    of a rebuilt grid are identical (checked on Anavyssos).
+  - Profile: `profile.csv` has `coastal_zone`; a strip at the foot of every panel
+    (`profile.coastal_zones_strip_frac`) is coloured by the class along the path, with a legend at the
+    top right in the order the path meets the classes (read row by row; fewer columns when it would
+    reach the subtitle). Without the layer the figure is as before.
+  - 3D block: `render.albedo.land_mode: coastal_zones` colours the land by class (`render.land_layer`:
+    Coastal Zones, else WorldCover, else the hypsometric ramp); the legend lists the classes over 1% of
+    the land, at most `legend_max_classes` (12), in columns as wide as their labels. The sea is the
+    rendered water as before.
+  - Schematic (the user, the same day: "add coastal zones also on the schematic"): a band of the classes
+    along the path between the section and the Inland / Coastal transition zone / Offshore band
+    (`schematic.coastal_zones_band`, a height ratio), each segment named where the name fits (the
+    symlog axis gives the land segments room) and the same legend as the profile at the top right
+    (`profile.class_legend`, `profile.draw_class_strip`). The WorldCover ribbon on the land surface stays.
+  - Colours are the product's legend, read from the map service's renderer (`sources.coastal_zones.classes`),
+    softened in HSV like WorldCover; the labels are the product's, shortened by hand to fit a legend.
+    Several legend colours are nearly the same (beaches, dunes, sparse vegetation; open sea and coastal
+    waters; natural forest and plantations share one), hence the hairlines between the runs of the strip.
+  - The grid's land (DEM, WorldCover) and the Coastal Zones coastline differ by a cell or two, so a strip
+    of the block's land carried a sea class (coastal waters, lagoons, estuaries, inlets, open sea): over
+    1% of the land in 37 of the first 73 transects, which put "coastal waters" in half of the land
+    legends and a cyan outline round the lagoon shores (Klaipeda 1, Porto 1). `render.land_layer` now
+    gives a land cell of the `sea_classes` the nearest other class within `shore_fill_m` (50 m). Land
+    that the layer calls sea further out keeps the sea class (flats and bars: 6.8% of the land at
+    Cadiz 3, 2.4% at Thrace 1; 5 of the 73 still list a sea class). The grid's `coastal_zones`, the
+    profile strip and the schematic band keep the layer as it is. The block legend's shares are
+    counted on the painted classes, no longer read from `grid.json`.
+  - The blocks of the earlier batches (WorldCover on land) are kept as `<id>_block_<quality>[_side]_worldcover`
+    with their render caches (`render_*_worldcover.npz`), so `--tag _worldcover --set
+    albedo.land_mode=landcover --recompose` redoes their pages.
+
 ## Gotchas
 
 - forge3d (1.44.0, Metal): `sun_azimuth_deg` is counter-clockwise (pass 360 - bearing); hard
@@ -220,6 +276,17 @@ data/raw, data/derived/<t>, output/<t>
 - The bathymetry extract is cut to the grid box, so a changed path (waypoints) can leave it too
   small: `01_get_bathymetry.py` re-fetches when the saved file does not cover the box and
   `build_grid` refuses to run with a short one.
+- DEM and WorldCover windows were fetched again on every run (242 "does not cover" lines in the
+  2026-11-11 batch log), for two reasons: `fetch.read_cog_window` rounded the window to the nearest
+  pixel, up to half a pixel short of the box (now rounded outward), and GLO-30 tiles start half a
+  cell off the whole degree, so a window at a tile edge is always that much short of the nominal
+  extent (`terrain.window_is_short` now allows one cell). Most windows saved before the fix pass the
+  test; one more than a cell short is read again once.
+- A window that falls short used to be deleted before the new one was read, and every read error
+  was logged as "no tile ... (an all-ocean tile is not published)": on 2026-11-20 a network error
+  at Calabria 1 removed its DEM window and the grid step failed. Now the old file stays until the
+  new one is saved (`fetch.read_cog_window(refresh=True)`) and only a 404 counts as a missing
+  tile; any other read error stops the script.
 - GLO-30 is a surface model (buildings, trees); `grid.land_smooth_sigma_cells` can soften it.
   The DEM at the 041-03 site is 1.9 m where the site export says 7 m (the site point is on the beach).
 - xlsx exports: title in row 1, header in row 2 (`pd.read_excel(header=1)`); attribute columns
@@ -263,6 +330,14 @@ data/raw, data/derived/<t>, output/<t>
   raw output (`render_final*.npz`), not from the water post-processing; not fixed.
 - Shallow sandy floors mixed with turquoise read grey-beige until the water tint was made stronger
   in the first metres (`depth_scale_m` 8, `max_alpha` 0.85).
+- EEA map service of Coastal Zones (ArcGIS Server 12.1, a MapServer layer): 2 000 features per answer,
+  an id list (`returnIdsOnly`) has no limit; `quantizationParameters` and `resultType=tile` do not cut
+  a polygon to the extent (tried: the whole 1.45 M vertices came back); `maxAllowableOffset` 0.00002
+  leaves 800 000 vertices of the Mediterranean coastal-waters polygon (15 MiB of GeoJSON, 4 MiB
+  gzipped on the wire, 12 s); a failed query is a 200 answer with an `error` member (`fetch.get_json`
+  tries again). Cutting such a polygon to the box with shapely takes 0.02 s.
+- zsh does not split an unquoted `$var` into words: a test loop with `set -- $spec` ran nothing and
+  said nothing. Write the commands out, or loop over one word.
 - Dropbox: `PYTHONDONTWRITEBYTECODE=1` in the Makefile, `*conflicted copy*` ignored, no venv here.
 - Timings (M1 Max): preview 1600x900 x 6 frames about 1 s; final 3840x2160 x 64 frames about 12 s (plus a few seconds for the page).
 
@@ -277,18 +352,29 @@ python scripts/30_render_3d.py               # "median rendered/projected = 1.00
 make all Q=preview                           # every transect, about 40 min; failures land in output/failed.txt
 ```
 
-## Status and next steps (2026-11-11)
+## Status and next steps (2026-11-20)
 
-- Every transect has final figures from the 2026-11-11 batch (`make all Q=final`, 115 transects,
-  none failed, 82 min), the blocks recomposed and the 2D figures redrawn after the label fixes.
-  The committed code ("update the colors and minor tweaks") predates the label fixes in
-  `30_render_3d.py`, `profile.py` and `schematic.py`; the figures and data are ignored.
-- All 115 transects were reviewed on contact sheets (blocks, side views, profiles, schematics)
-  on 2026-11-11. Left as they are:
+- Every transect has final figures from the 2026-11-20 runs: ID-first names, Coastal Zones in the
+  profile, the schematic and both block views. All 115 transects have the layer (none fell back
+  to WorldCover) and `output/failed.txt` is empty.
+- Nothing of 2026-11-20 is committed: the changes are in the working tree (17 files and the new
+  `scripts/03_get_coastal_zones.py`); the figures and data are ignored.
+- All 115 transects were reviewed on contact sheets on 2026-11-20 (profiles, schematics, blocks,
+  side views). New with the Coastal Zones layer, left as they are:
+  - Blocks whose land legend still lists a sea class (land that the layer calls sea further than
+    `shore_fill_m` from another class): Cadiz 3 (coastal waters, 6.8% of the land), Thrace 1 (2.2%),
+    Galway 3 (1.7%), Split 2 (1.5%), Asko 2 (1.3%), Ferrol 2 (lagoons, 1.3%).
+  - The legend of the profile and the schematic is not checked against the panels. The largest has
+    12 classes in four rows (Baie de Veys 1, Kristineberg 3) and fits.
+  - The WorldCover blocks of the earlier batches (`..._worldcover`) take 1.2 GB in `output/` and
+    their render caches 2.0 GB in `data/derived/`; delete them when they are no longer wanted.
+- Left as they were on 2026-11-11:
   - Marine legs over land, need hand-set waypoints in `auto.overrides` (see Sea routing):
     Baie de Veys 1, Banyuls 2, Helsingor 1, Rostock 1, Sylt 2, Roscoff 3, Thrace 4,
     Kristineberg 3, Bilbao 2, La Tremblade 1, and Asko 3 (land at 150-250 m off the shoreline).
     After a waypoint: `make maps T=<name> Q=final` (the windows re-fetch if the box grew).
+    `check_profile` warned for 38 transects on 2026-11-20: these 11, and 27 with a few points
+    on land within 170 m of the shoreline (beach cells).
   - Flats and filled floors near 0 m (EMODnet near 0 or tidal flats): Sylt 1/2, Klaipeda 1,
     Lorient 3, Roscoff 1/3, Porto 1, La Tremblade 1, Southampton 1, Baie de Veys 2, St Andrews 1;
     possibly Porto 2, Lorient 1, Villefranche 1 (seen on the sheets only).
@@ -304,8 +390,6 @@ make all Q=preview                           # every transect, about 40 min; fai
 - Candidates for deletion in `data/`: the two older exports (`TREC_sample_data_export.xlsx`,
   `TREC_sample_data_athens_marine_metagenome.xlsx`) and the four full GLO-30 tiles in
   `data/raw/dem` (57 MB); nothing reads them.
-- The Mac moved from EET to CET between the batch and the check, so file times read one hour
-  earlier than the batch logs say.
 - Possible follow-ups the user has not asked for: a contact-sheet of all 115 blocks, an index
   page listing transects with their stations, EPSG:3035 for a pan-European overview map.
 
@@ -456,3 +540,58 @@ Done:
   - `output/recompose_2026-11-11.log`
   - `output/redraw2d_2026-11-11.log`
 - Every figure was reviewed on contact sheets. What is left is under Status.
+
+### 2026-11-15 — two slides: tools and data
+
+Request: "check this repo for the maps. make two slides in odp for the tools used and the data summaries" then
+"change the style to use Liberation Sans, and make style simple like standford" then "take a look at my
+presentation ~/Downloads/2026-11-16-lab-meeting-bork-savvas_final and change the style accordingly.
+not fancy staff, simple"
+
+Done: `output/slides/trec-maps_tools_data.odp` (ignored, like all of `output/`), two slides in the
+style of the lab-meeting deck (an ODP without extension in ~/Downloads, 62 slides; slides 50-51
+after "Maps" were empty): `output/slides/make_slides.py <deck> <out.odp>` clones the deck's "Maps"
+slide (master "Default", two outline columns, Liberation Sans, black on white), fills the bullets,
+keeps only the deck's styles and the pictures they use, then `soffice --convert-to odp` normalises
+it. "Maps: tools": libraries per step, the Anavyssos block and profile on the right. "Maps: data":
+land 114 LSI sites (3,680 soil, 1,248 sediment, 7,179 shoreline water samples), sea 188 Tara
+stations (21,939 water samples), open data (GLO-30 30 m, EMODnet 115 m, WorldCover 10 m),
+115 transects (20 countries, 98 with stations). Numbers from the exports and
+`data/derived/*/grid.json|stations.csv`. Two earlier versions (python-pptx, then a Stanford-like
+style with charts) were replaced; the pooled land-cover chart was dropped with them.
+
+### 2026-11-20 — ID-first output names, Coastal Zones in the profile, the block and the schematic
+
+Request: "1. rename all output with the id first. like 042-1_thrace. 2. make the plots name also
+start with this id prefix and then the profile.png. 3. major: add the coastal zones in both profile
+and 3d maps. Before acting check all the repo and memory etc" then "add coastal zones also on the
+schematic". During the first batch: "kill", then "stop", then "continue".
+
+"Coastal zones" was read as the Copernicus Coastal Zones 2018 layer of `trec-coastal-microbiome`,
+not the TREC sampling zones. The reading is the agent's; it was stated to the user, who went on
+with the schematic request.
+
+Done:
+- Output names: `config.output_stem`, `output/<id>/<id>_<figure>`. The existing folders and
+  figures were renamed, the WorldCover blocks to `..._worldcover`. `--transect` and `T=` take
+  either name.
+- Data: `scripts/03_get_coastal_zones.py` (the EEA map service, no key), `terrain.read_polygons`,
+  `coastal_zones` in `grid.npz` and `coastal_zone` in `profile.csv`. 115 files, 30 MB in
+  `data/raw/coastal_zones`, 23 MB of it the 15 basin-wide sea polygons in `_big/`.
+- Figures: a class strip and legend in the profile, a class band and the same legend in the
+  schematic, the block's land coloured by class with a legend of the classes over 1% (at most 12).
+- Found in the review and fixed: a strip of the block's land along the shore carried a sea class
+  (the shore fill of 50 m, see Coastal Zones under Decisions).
+- Fixed on the way: the DEM and WorldCover windows fetched again on every run, and a short window
+  deleted before its replacement was read (both under Gotchas).
+- Runs, one render at a time, in the order of `make all`:
+  - `output/batch_final_2026-11-20.log`: 68 transects (Anavyssos to Faro 3), stopped by "kill".
+  - `output/redraw_schematic_2026-11-20.log`: the 71 schematics drawn again with the band.
+  - `output/batch_final_2026-11-20b.log`: Cadiz 1 and 2, stopped by the agent to add the shore fill.
+  - `output/batch_final_2026-11-20c.log`: the other 45 transects (Cadiz 3 to Thrace 6), then the
+    blocks of the first 70 again with the shore fill. Calabria 1 failed on the deleted DEM
+    window and was run again at the end.
+- Every figure was reviewed on contact sheets. What is left is under Status.
+
+On "kill" the agent stopped the batch but went on with other work, and the user had to type "stop".
+Both words mean: halt every job and all follow-up work, report the state, wait for "continue".

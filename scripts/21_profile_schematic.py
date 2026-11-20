@@ -14,7 +14,7 @@ def main() -> None:
     args = parser(__doc__).parse_args()
     params, tcfg = setup(args)
     log = lambda m: C.log("schematic", m)
-    derived, out = C.transect_dirs(params, tcfg["name"])
+    derived, out, stem = C.transect_dirs(params, tcfg)
     prof = pd.read_csv(derived / "profile.csv")
     land_samples = pd.read_csv(derived / "land_samples.csv")
     stations = pd.read_csv(derived / "stations.csv")
@@ -30,8 +30,9 @@ def main() -> None:
         water["s"] = float(line.project(Point(x, y))) - s0
         log(f"shoreline water: {water['n_samples']} samples, {water['depth_min_m']:g}-{water['depth_max_m']:g} m, "
             f"at s = {water['s']:.0f} m")
-    schematic.plot_schematic(prof, land_samples, stations, water, params, tcfg, out / "schematic.png", out / "schematic.pdf")
-    log(f"wrote {out / 'schematic.png'} and .pdf")
+    png = out / f"{stem}_schematic.png"
+    schematic.plot_schematic(prof, land_samples, stations, water, params, tcfg, png, png.with_suffix(".pdf"))
+    log(f"wrote {png} and .pdf")
 
 
 if __name__ == "__main__":

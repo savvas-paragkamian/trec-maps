@@ -32,9 +32,10 @@ def main() -> None:
     R = params["render"]
     R = C.apply_overrides(R, args.set)
     log = lambda m: C.log("render", m)
-    derived, out = C.transect_dirs(params, tcfg["name"])
+    derived, out, stem = C.transect_dirs(params, tcfg)
     grid = terrain.load_grid(derived)
     meta, z, land = grid["meta"], grid["z"], grid["land"]
+    layer = render.land_layer(R["albedo"].get("land_mode"), grid, params["sources"])   # the classes that colour the land
     camera_cfg = R["camera"]
     side = args.view == "side"
     rotated = False
@@ -105,7 +106,7 @@ def main() -> None:
             camera_cfg["azimuth_deg"] = float(saved["azimuth_deg"])
         log(f"reusing {cache.name}")
     else:
-        albedo = render.make_albedo(z, land, R["albedo"], grid["landcover"], params["sources"]["landcover"])
+        albedo = render.make_albedo(z, land, R["albedo"], layer)
         z_render = render.exaggerate_sea(z, sea_f)
         if pad > 0:
             z_render, albedo = render.pad_block(z_render, albedo, pad, base_z * sea_f,
@@ -249,24 +250,20 @@ def main() -> None:
               "note": note,
               "symbols": [("Tara station: sea level, sampling depth, sea floor", "pin", page_style["station"]),
                           ("soil / sediment sampling position", "v", page_style["sample"])]}
-    LC = params["sources"]["landcover"]
-    use_classes = R["albedo"].get("land_mode") == "landcover" and bool((grid["landcover"] > 0).any())
-    if use_classes:
-        classes = C.landcover_classes(params)
-        lut = render.landcover_lut(classes, LC.get("soften_3d", [0.55, 0.92]), LC.get("water_color", "#a9c6d8"),
-                                   LC.get("fallback_color", "#cfc6b4"))
-        fractions = {int(k): v for k, v in meta.get("landcover_fractions_on_land", {}).items()}
-        present = [c for c, f in sorted(fractions.items(), key=lambda kv: -kv[1]) if c in classes and f >= 0.01]
-        legend["classes"] = [(classes[c][0], tuple(float(v) for v in lut[c])) for c in present]
-        legend["classes_title"] = "Land cover (ESA WorldCover 2021)"
     credits = [f"Land: {params['sources']['dem']['citation']}"]
-    if use_classes:
-        credits.append(f"Land cover: {LC['citation']}")
+    if layer:
+        what, product = {"coastal_zones": ("Land cover / land use", "Copernicus Coastal Zones 2018"),
+                         "landcover": ("Land cover", "ESA WorldCover 2021")}[layer["key"]]
+        present = [c for c, f in sorted(layer["fractions"].items(), key=lambda kv: -kv[1]) if c in layer["labels"] and f >= 0.01]
+        shown = present[:int(R["albedo"].get("legend_max_classes", 12))]
+        legend["classes"] = [(layer["labels"][c], tuple(float(v) for v in layer["colours"][c])) for c in shown]
+        legend["classes_title"] = f"{what} ({product}" + (f", the {len(shown)} largest classes)" if len(shown) < len(present) else ")")
+        credits.append(f"{what}: {layer['citation']}")
     credits += [f"Sea floor: {params['sources']['bathymetry']['citation']}",
                 "Samples: TREC (EMBL) data portal. Rendered with forge3d."]
     compose.draw_furniture(page, title=tcfg["title"], subtitle=tcfg.get("subtitle", ""), credits=credits,
                            legend=legend, style=page_style)
-    out_png = out / f"block_{args.quality}{view_tag}{args.tag}.png"
+    out_png = out / f"{stem}_block_{args.quality}{view_tag}{args.tag}.png"
     page.save(out_png, out_png.with_suffix(".pdf"), title=f"{tcfg['title']} land-sea block")
     log(f"wrote {out_png} and .pdf")
 

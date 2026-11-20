@@ -16,11 +16,17 @@ automatically, paired with their Tara stations (`make list` prints all 115). The
 | `thoriko` | 041-04, Thoriko marina | TE_178 (6 km; 22 m recorded, 76 m in EMODnet at that position) |
 | `schinias` | 041-05, Marathon | none nearby; the profile continues 2 km offshore along the transect bearing |
 
+The figures of a transect carry the land site's ID first, as does their folder: `<id>` below is
+`<site ID>_<transect name without _lsi_<n>>`, for example `output/042-01_thrace/042-01_thrace_profile.png`
+for `thrace_lsi_1` and `output/041-03_anavyssos/` for `anavyssos` (the ID carries the site's number).
+`T=` and `--transect` take either name.
+
 | output | what |
 |---|---|
-| `output/<transect>/profile.png`, `.pdf` | elevation / depth along the transect path in three panels: the land transect in detail (own vertical scale, widened to the inland-most sample), the nearshore in metres and the offshore in kilometres, with TREC zones, soil positions and the stations' sampling depths; water in blue, the ground under the sea floor in brown, some room after the last station |
-| `output/<transect>/schematic.png`, `.pdf` | the TREC sampling-concept figure with real data: symmetric-log distance axis around the shoreline, ESA WorldCover along the land surface, soil and sediment tubes, water samples at their sampling depths, the inland / coastal transition / offshore band |
-| `output/<transect>/block_<quality>.png`, `.pdf` | path-traced solid block seen from the south at a low angle (a section through the coast rather than a map): land (WorldCover classes) and sea floor under a semi-transparent, wavy sea surface (the floor fades to the water colour with depth and shows through the waves), brown cut walls (the ground under the sea floor) down to a base depth with the water column in cross-section above them, a sea-level line and a vertical axis in metres at the front corner, the path, the soil positions and a pin per Tara station (sea level, sampling depth, sea floor); vector overlay in the PDF. Depths are exaggerated twice as much as land (stated in the legend) |
+| `output/<id>/<id>_profile.png`, `.pdf` | elevation / depth along the transect path in three panels: the land transect in detail (own vertical scale, widened to the inland-most sample), the nearshore in metres and the offshore in kilometres, with TREC zones, soil positions and the stations' sampling depths; water in blue, the ground under the sea floor in brown, some room after the last station. A strip at the foot of every panel shows the Copernicus Coastal Zones 2018 class along the path (beach, dunes, salt marsh, intertidal flats, estuary, coastal waters, ...), with a legend in the order the path meets the classes |
+| `output/<id>/<id>_schematic.png`, `.pdf` | the TREC sampling-concept figure with real data: symmetric-log distance axis around the shoreline, ESA WorldCover along the land surface, soil and sediment tubes, water samples at their sampling depths, a band of the Coastal Zones 2018 classes along the path (named in the band where a segment is wide enough, all of them in the legend at the top right), the inland / coastal transition / offshore band |
+| `output/<id>/<id>_block_<quality>.png`, `.pdf` | path-traced solid block seen from the south at a low angle (a section through the coast rather than a map): land coloured by its Coastal Zones 2018 class (the legend lists the largest twelve; a strip of land that the layer calls sea takes the nearest other class within `sources.coastal_zones.shore_fill_m`) and sea floor under a semi-transparent, wavy sea surface (the floor fades to the water colour with depth and shows through the waves), brown cut walls (the ground under the sea floor) down to a base depth with the water column in cross-section above them, a sea-level line and a vertical axis in metres at the front corner, the path, the soil positions and a pin per Tara station (sea level, sampling depth, sea floor); vector overlay in the PDF. Depths are exaggerated twice as much as land (stated in the legend) |
+| `output/<id>/<id>_block_<quality>[_side]_worldcover.png`, `.pdf` | the blocks of the batches before 2026-11-20, with ESA WorldCover on land. To make one again: `python scripts/30_render_3d.py --transect <t> --quality final --set albedo.land_mode=landcover --tag _worldcover` (add `--recompose` to reuse the saved render) |
 
 ## Setup
 
@@ -45,7 +51,7 @@ and `TREC_site_data_export_all-sites_marine_matagenome.xlsx` (the seawater sampl
 stations and the LSI shoreline water). Sites, positions, shore distances, sampling depths and
 the site-to-station relations are read from them (each export is cached as a pickle under
 `data/derived/_cache`, the marine one takes 11 s to parse). Everything else is downloaded by
-the three get-scripts:
+the four get-scripts:
 
 - **Land:** Copernicus DEM GLO-30; only the window over the grid is read from the 1° AWS
   cloud-optimised tiles (`scripts/00_get_dem.py`).
@@ -53,13 +59,19 @@ the three get-scripts:
   the WCS service, requested on its native grid for the transect's box (`scripts/01_get_bathymetry.py`).
 - **Land cover:** ESA WorldCover 2021 v200, 10 m; only the window over the grid is read from the
   3-degree AWS tiles through GDAL range requests (`scripts/02_get_landcover.py`).
+- **Coastal land cover / land use:** Copernicus Coastal Zones 2018 (vector, 71 classes, a strip
+  10 km inland of the coastline and the sea in front of it), the layer `trec-coastal-microbiome`
+  reads at the sample positions. The polygons that touch the grid box come from the EEA's public
+  map service of the layer, no key needed, and are cut to the box
+  (`scripts/03_get_coastal_zones.py`, 10 to 500 KiB per transect). The sea is a few basin-wide
+  polygons of several MiB; each is fetched once and kept in `data/raw/coastal_zones/_big/`.
 
 ## Run
 
 ```bash
 make list                  # every transect: name, land site, stations, subtitle
-make pilot                 # dem, bathy, landcover, grid, profile, schematic, render (preview) for T=anavyssos
-make pilot T=roscoff_lsi_2
+make pilot                 # dem, bathy, landcover, coastal, grid, profile, schematic, render (preview) for T=anavyssos
+make pilot T=roscoff_lsi_2 # or T=001-02_roscoff, the name of its figures
 make maps T=bergen_lsi_1 Q=final   # everything for one transect, both 3D views
 make all Q=preview         # every transect one after the other (one render at a time); failures in output/failed.txt
 make final                 # 3840 x 2160 block, 64 frames
@@ -76,16 +88,20 @@ Steps, each a thin script over `trecmaps/`:
 | 0 | `00_get_dem.py` | `data/raw/dem/glo30_<transect>_<tile>.tif` (the only DEM network code; `--dry-run`, `.part` then rename, skips existing files) |
 | 1 | `01_get_bathymetry.py` | `data/raw/bathy/emodnet_mean_<transect>.tif` + `.json` (re-fetched when the grid box grows) |
 | 2 | `02_get_landcover.py` | `data/raw/landcover/worldcover_2021_<transect>_<tile>.tif` |
-| 10 | `10_build_grid.py` | `data/derived/<transect>/grid.npz`, `z.tif`, `grid.json`: DEM, bathymetry and land cover on one metric grid, merged with a land mask |
-| 20 | `20_profile_2d.py` | `path.json` (the path, marine legs routed around land), `profile.csv`, `land_samples.csv`, `stations.csv`, `output/<transect>/profile.png/.pdf` |
-| 21 | `21_profile_schematic.py` | `output/<transect>/schematic.png/.pdf` (from the step-20 tables) |
-| 30 | `30_render_3d.py` | `output/<transect>/block_<quality>[_side].png/.pdf` and a render cache for `--recompose`; `--view front` (from the sea) or `side` (transect left to right) |
+| 3 | `03_get_coastal_zones.py` | `data/raw/coastal_zones/cz_2018_<transect>.geojson.gz`: the Coastal Zones polygons cut to the grid box (`--dry-run` counts them; re-fetched when the grid box grows) |
+| 10 | `10_build_grid.py` | `data/derived/<transect>/grid.npz`, `z.tif`, `grid.json`: DEM, bathymetry, land cover and Coastal Zones on one metric grid, merged with a land mask (rebuilt when the box changed or the Coastal Zones file is new) |
+| 20 | `20_profile_2d.py` | `path.json` (the path, marine legs routed around land), `profile.csv`, `land_samples.csv`, `stations.csv`, `output/<id>/<id>_profile.png/.pdf` |
+| 21 | `21_profile_schematic.py` | `output/<id>/<id>_schematic.png/.pdf` (from the step-20 tables) |
+| 30 | `30_render_3d.py` | `output/<id>/<id>_block_<quality>[_side].png/.pdf` and a render cache for `--recompose`; `--view front` (from the sea) or `side` (transect left to right) |
 
 ## Configuration
 
-- `config/params.yml`: paths, sources (with the WorldCover legend), grid (CRS, cell size,
-  margins, land/sea merge), profile and schematic (step, zones, figures), render (camera, sun,
-  exaggeration, quality presets, colours; `albedo.land_mode` is `landcover` or `hypsometric`).
+- `config/params.yml`: paths, sources (with the WorldCover and Coastal Zones legends), grid
+  (CRS, cell size, margins, land/sea merge), profile and schematic (step, zones, figures; the
+  Coastal Zones strip is `profile.coastal_zones_strip_frac`, the schematic's band
+  `schematic.coastal_zones_band`, 0 turns either off), render (camera, sun,
+  exaggeration, quality presets, colours; `albedo.land_mode` is `coastal_zones`, `landcover` or
+  `hypsometric`).
 - `config/transects.yml`: explicit entries by TREC site IDs only (`land_site`, `marine_sites`
   in path order, optional `waypoints` to keep a marine leg off the beach), plus optional
   `grid`, `profile`, `schematic` and `render` overrides merged over `params.yml`; and the
@@ -113,7 +129,8 @@ and water settings, as `psatha` does for its mountain-walled bay.
 The path (inland end, shoreline, waypoints, stations) is boxed with margins in the path's
 UTM zone (`grid.crs: auto`; the Athens figures were first made in EPSG:2100) at 10 m cells,
 coarsened when the box would exceed `grid.max_cells`. GLO-30 is resampled bilinearly, EMODnet
-cubically after its land cells are set to nodata, WorldCover by nearest neighbour. Land is
+cubically after its land cells are set to nodata, WorldCover by nearest neighbour; the Coastal
+Zones polygons are burnt in by cell centre, the largest first. Land is
 DEM > 0.5 m (speckle removed) or any WorldCover class but water, which keeps polders and
 flats below the threshold on land. Sea cells take the EMODnet floor where it exists; where the
 115 m grid stops short of the coastline the floor slopes from −0.5 m at the shoreline down to
@@ -131,5 +148,6 @@ row (`render.camera.max_bottom_frac`).
 - Copernicus DEM GLO-30, ESA (produced by Airbus/DLR), https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model
 - EMODnet Bathymetry Consortium (2024). *EMODnet Digital Bathymetry (DTM 2024)*. https://doi.org/10.12770/cf51df64-56f9-4a99-b1aa-36b8d7b743a1 (CC BY)
 - Zanaga, D. et al. (2022). *ESA WorldCover 10 m 2021 v200*. https://doi.org/10.5281/zenodo.7254221 (CC BY 4.0)
+- Copernicus Land Monitoring Service, *Coastal Zones Land Cover/Land Use 2018 (vector)*, European Environment Agency. https://doi.org/10.2909/205e2db2-4e35-4b1b-bf84-271c4a82248c. Class colours are the product's legend, as the EEA map service of the layer draws it.
 - Sample and site metadata: TREC data portal (EMBL). Publication of TREC data needs the consortium's consent.
 - Rendering: forge3d (https://github.com/milos-agathon/forge3d).

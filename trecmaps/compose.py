@@ -135,16 +135,20 @@ def draw_furniture(page: Page, *, title: str, subtitle: str, credits: list[str],
     x = margin
     if legend.get("classes"):
         from matplotlib.patches import Rectangle
-        rows = 4
-        cols = int(np.ceil(len(legend["classes"]) / rows))
-        sw, row_h, col_w = page.px(40), page.px(44), page.px(430)
+        rows, sw, row_h = 4, page.px(40), page.px(44)
         top = y0 + bar_h - rows * row_h + page.px(8)
-        page.text(x, top - page.px(44), legend.get("classes_title", "Land cover"), size=30, color=text, va="bottom")
-        for i, (label, colour) in enumerate(legend["classes"]):
-            cx, cy = x + (i // rows) * col_w, top + (i % rows) * row_h
-            page.ax.add_patch(Rectangle((cx, cy), sw, sw * 0.7, facecolor=colour, edgecolor="none", zorder=9))
-            page.text(cx + sw + page.px(14), cy + sw * 0.35, label, size=26, color=text, va="center")
-        x += cols * col_w + page.px(80)
+        title = page.text(x, top - page.px(44), legend.get("classes_title", "Land cover"), size=30, color=text, va="bottom")
+        renderer = page.fig.canvas.get_renderer()
+        x_title = title.get_window_extent(renderer).x1
+        for c in range(0, len(legend["classes"]), rows):          # columns of four, each as wide as its longest label
+            widest = 0.0
+            for r, (label, colour) in enumerate(legend["classes"][c:c + rows]):
+                cy = top + r * row_h
+                page.ax.add_patch(Rectangle((x, cy), sw, sw * 0.7, facecolor=colour, edgecolor="none", zorder=9))
+                t = page.text(x + sw + page.px(14), cy + sw * 0.35, label, size=26, color=text, va="center")
+                widest = max(widest, t.get_window_extent(renderer).width)
+            x += sw + page.px(14) + widest + page.px(60)
+        x = max(x, x_title + page.px(60)) + page.px(20)
     else:
         strip, lo, hi = legend["land"]
         page.text(x, y0 - page.px(44), "Land elevation (m)", size=30, color=text, va="bottom")

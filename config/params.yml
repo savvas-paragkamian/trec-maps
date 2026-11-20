@@ -46,6 +46,94 @@ sources:
     water_color: "#a9c6d8"              # inland water bodies; the legend's dark blue reads as a shoreline step
     fallback_color: "#cfc6b4"           # land cells without a class
 
+  coastal_zones:
+    # Copernicus Coastal Zones 2018, land cover / land use in 71 classes (CODE_5_18) for a strip 10 km inland of the
+    # coastline and the sea in front of it; the layer trec-coastal-microbiome reads at the sample positions. The
+    # polygons that touch the grid box come from the EEA's public map service of the layer (no key), are cut to the
+    # box and saved as GeoJSON (scripts/03_get_coastal_zones.py).
+    service: "https://image.discomap.eea.europa.eu/arcgis/rest/services/CoastalZones/CZ_CoastalZones_2018/MapServer/0"
+    field: CODE_5_18
+    generalise_deg: 0.00002             # the service drops vertices closer than this to the outline (about 2 m; cells are 10 m)
+    big_ha: 50000                       # larger polygons (the sea: basin-wide, up to 800 000 vertices) are fetched once and kept in _big/
+    chunk: 300                          # polygons per request
+    citation: "Copernicus Land Monitoring Service, Coastal Zones Land Cover/Land Use 2018 (vector), European Environment Agency. doi:10.2909/205e2db2-4e35-4b1b-bf84-271c4a82248c"
+    classes:                            # code: [label (the product's, shortened), the product's legend colour (the map service's renderer)]
+      11110: ["continuous urban fabric", "#d20000"]
+      11120: ["dense urban fabric", "#f20000"]
+      11130: ["low density urban fabric", "#f5a18a"]
+      11210: ["industrial, commercial and public units", "#9862f0"]
+      11220: ["nuclear energy plants", "#8748ee"]
+      12100: ["road networks", "#838b9d"]
+      12200: ["railways", "#404040"]
+      12310: ["cargo port", "#ffe6de"]
+      12320: ["passenger port", "#f0d7de"]
+      12330: ["fishing port", "#e1c8de"]
+      12340: ["naval port", "#d2b9de"]
+      12350: ["marinas", "#c3aade"]
+      12360: ["local multi-functional harbours", "#b49bde"]
+      12370: ["shipyards", "#a181d5"]
+      12400: ["airports", "#e19fc2"]
+      13110: ["mineral extraction sites", "#966401"]
+      13120: ["dump sites", "#875501"]
+      13130: ["construction sites", "#784601"]
+      13200: ["land without current use", "#693701"]
+      14000: ["green urban, sports and leisure", "#91d700"]
+      21100: ["arable land", "#ffffa8"]
+      21200: ["greenhouses", "#b9c151"]
+      22100: ["vineyards, fruit trees and berries", "#f3830b"]
+      22200: ["olive groves", "#df9f00"]
+      23100: ["annual crops with permanent crops", "#ffe6a6"]
+      23200: ["complex cultivation patterns", "#ffe64d"]
+      23300: ["agriculture with natural vegetation", "#e6cc4d"]
+      23400: ["agro-forestry", "#edc69f"]
+      31100: ["broadleaved forest", "#82be00"]
+      31200: ["broadleaved plantations", "#82be00"]
+      32100: ["coniferous forest", "#027800"]
+      32200: ["coniferous plantations", "#027800"]
+      33100: ["mixed forest", "#41a000"]
+      33200: ["mixed plantations", "#41a000"]
+      34000: ["transitional woodland and scrub", "#a9f100"]
+      35000: ["lines of trees and scrub", "#c3f200"]
+      36000: ["damaged forest", "#2b342b"]
+      41000: ["managed grassland", "#e6e64d"]
+      42100: ["semi-natural grassland", "#e0f24d"]
+      42200: ["alpine and sub-alpine grassland", "#ccf24d"]
+      51000: ["heathland and moorland", "#a6ff80"]
+      52000: ["alpine scrub land", "#a0ef6a"]
+      53000: ["sclerophyllous scrubs", "#a9ec5c"]
+      61100: ["sparse vegetation on sands", "#ccffd7"]
+      61200: ["sparse vegetation on rocks", "#c8f0c8"]
+      62111: ["sandy beaches", "#e0f5dc"]
+      62112: ["shingle beaches", "#e0ebdc"]
+      62120: ["dunes", "#f0f5dc"]
+      62200: ["river banks", "#e0e1dc"]
+      63110: ["bare rocks and outcrops", "#b4beb4"]
+      63120: ["coastal cliffs", "#b4b4aa"]
+      63200: ["burnt areas", "#a0aaa0"]
+      63300: ["glaciers and perpetual snow", "#8c968c"]
+      71100: ["inland marshes", "#a6a6fd"]
+      71210: ["exploited peat bogs", "#5d60f9"]
+      71220: ["unexploited peat bogs", "#464af8"]
+      72100: ["salt marshes", "#91c8f0"]
+      72200: ["salines", "#858fa7"]
+      72300: ["intertidal flats", "#a2a3e3"]
+      81100: ["water courses", "#00f1dd"]
+      81200: ["canals and modified water courses", "#00f4cf"]
+      81300: ["oxbows", "#79ecf0"]
+      82100: ["natural lakes", "#82f0f0"]
+      82200: ["reservoirs", "#78e6e6"]
+      82300: ["aquaculture ponds", "#6edcdc"]
+      82400: ["water bodies of extraction sites", "#64d2d2"]
+      83100: ["lagoons", "#00ffa6"]
+      83200: ["estuaries", "#00f096"]
+      83300: ["marine inlets and fjords", "#00e187"]
+      84100: ["open sea", "#e6f5f3"]
+      84200: ["coastal waters", "#d2e6eb"]
+    sea_classes: [83100, 83200, 83300, 84100, 84200]   # the sea of the block; on its land (the DEM's, whose coastline
+    shore_fill_m: 50                    # differs by a cell or two) such a cell takes the nearest other class within this distance
+    soften: [0.8, 0.97]                 # HSV saturation / value factors for the 2D strip
+    soften_3d: [0.55, 0.92]             # ... and under the path tracer, as for WorldCover
+
 grid:
   crs: auto                             # the path's UTM zone (EPSG:326xx); the Athens figures were first made in EPSG:2100
   cell_m: 10
@@ -70,6 +158,7 @@ profile:
   route: {cell_m: 50, land_buffer_m: 100, snap_m: 1500, max_detour: 5}   # routing grid, distance kept from land, endpoint snap, give-up ratio
   break_at_m: 1500                      # broken x axis: metres up to here, kilometres beyond
   end_padding_frac: 0.04                # room after the last station (or the offshore end), as a fraction of the last panel
+  coastal_zones_strip_frac: 0.035       # the Coastal Zones strip at the foot of every panel, as a fraction of its height (0 = none)
   zones:                                # TREC sampling contexts, metres from the shoreline (negative = inland)
     - {name: "inland\n200-300 m", from: -300, to: -200}
     - {name: "transition\n50-150 m", from: -150, to: -50}
@@ -95,6 +184,7 @@ schematic:                              # the TREC sampling-concept figure drawn
   ribbon_pt: 5                          # land cover ribbon along the surface, in points
   tube_pt: 11                           # sample tube markers, in points
   end_padding_frac: 0.05                # room after the last station, as a fraction of the (symlog) axis width
+  coastal_zones_band: 0.14              # the Coastal Zones band under the section, as a height ratio (the zone band is 0.14; 0 = none)
   figure: {width_in: 12.5, height_in: 6.4, dpi: 300}
   zones:
     - {name: "Inland", from: null, to: -50, color: "#b9d59a"}
@@ -169,7 +259,8 @@ render:
     draft: {size: [2560, 1440], frames: 16}
     final: {size: [3840, 2160], frames: 64}
   albedo:                               # sRGB stops [height_m, colour], interpolated per channel, then linearised
-    land_mode: landcover                # landcover (ESA WorldCover classes) or hypsometric (the `land` ramp)
+    land_mode: coastal_zones            # coastal_zones (Copernicus Coastal Zones 2018; WorldCover where a transect has none), landcover (ESA WorldCover) or hypsometric (the `land` ramp)
+    legend_max_classes: 12              # the legend lists the largest classes on land (those over 1%)
     land: [[0, "#dcd2b6"], [10, "#cfc49e"], [50, "#b9b78b"], [150, "#a3a67a"], [400, "#8f8a6a"]]
     sea: [[0, "#b08a62"], [-5, "#9a7452"], [-20, "#7d5c40"], [-60, "#64482f"], [-120, "#4e3724"], [-250, "#3a281a"]]   # sea floor: sand to dark brown, seen through the water
     shoreline: {color: "#f6efdc", width_cells: 1}

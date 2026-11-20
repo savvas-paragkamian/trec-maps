@@ -13,6 +13,9 @@ the consortium's consent; the downloads are rebuilt by the scripts).
   (the four full Athens tiles from the first runs can be deleted).
 - `raw/bathy/`: EMODnet Bathymetry WCS extracts, `scripts/01_get_bathymetry.py`.
 - `raw/landcover/`: ESA WorldCover windows, `scripts/02_get_landcover.py`.
+- `raw/coastal_zones/`: Copernicus Coastal Zones 2018 polygons cut to each transect's grid box
+  (`cz_2018_<transect>.geojson.gz`), `scripts/03_get_coastal_zones.py`; `_big/` keeps the
+  basin-wide sea polygons, fetched once and shared by the transects of a sea.
 - `derived/_cache/`: the exports as pickles (rebuilt when an xlsx is newer).
 - `derived/<transect>/`: merged land-sea grid (`z.tif`, `grid.npz`, `grid.json`),
   profile tables (`profile.csv`, `land_samples.csv`, `stations.csv`) and render caches.

@@ -20,7 +20,7 @@ from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject
 from scipy import ndimage
 
-from .config import ROOT
+from .config import ROOT, read_json
 
 RESAMPLING = {"nearest": Resampling.nearest, "bilinear": Resampling.bilinear,
               "cubic": Resampling.cubic, "average": Resampling.average}
@@ -129,6 +129,11 @@ def bathy_path(params: dict, name: str) -> Path:
     return params["paths"]["raw_dir"] / "bathy" / f"emodnet_mean_{name}.tif"
 
 
+def coastal_zones_path(params: dict, name: str) -> Path:
+    """The Coastal Zones 2018 polygons cut to a transect's grid box (scripts/03_get_coastal_zones.py)."""
+    return params["paths"]["raw_dir"] / "coastal_zones" / f"cz_2018_{name}.geojson.gz"
+
+
 def wcs_request(lonlat: tuple, cfg: dict) -> dict:
     """EMODnet WCS GetCoverage snapped to the native grid (1/960 degree), so nothing is resampled server side."""
     per_deg = int(round(1.0 / float(cfg["native_deg"])))
@@ -150,17 +155,50 @@ def tile_extent(lat_s: str, lon_s: str, size_deg: int) -> tuple[float, float, fl
 
 
 def window_is_short(path: Path, lonlat: tuple, extent: tuple) -> bool:
-    """Does an existing window file fall short of the box (clipped to its tile's extent)? -> fetch it again."""
+    """Does an existing window file fall short of the box (clipped to its tile's extent)? -> fetch it again.
+    One cell is allowed: GLO-30 tiles start half a cell off the whole degree, so a window at a tile edge
+    is always that much short of the nominal extent."""
     clipped = (max(lonlat[0], extent[0]), max(lonlat[1], extent[1]), min(lonlat[2], extent[2]), min(lonlat[3], extent[3]))
-    return path.exists() and clipped[2] > clipped[0] and clipped[3] > clipped[1] and not covers(path, clipped)
+    return (path.exists() and clipped[2] > clipped[0] and clipped[3] > clipped[1]
+            and not covers(path, clipped, tol_cells=1.0))
 
 
-def covers(raster_path: Path, lonlat: tuple, tol_deg: float = 1e-6) -> bool:
+def covers(raster_path: Path, lonlat: tuple, tol_deg: float = 1e-6, tol_cells: float = 0.0) -> bool:
     """Does the EPSG:4326 raster's extent contain the (minlon, minlat, maxlon, maxlat) box?"""
     with rasterio.open(raster_path) as src:
-        b = src.bounds
-    return (b.left <= lonlat[0] + tol_deg and b.bottom <= lonlat[1] + tol_deg
-            and b.right >= lonlat[2] - tol_deg and b.top >= lonlat[3] - tol_deg)
+        b, tol = src.bounds, tol_deg + tol_cells * max(src.res)
+    return (b.left <= lonlat[0] + tol and b.bottom <= lonlat[1] + tol
+            and b.right >= lonlat[2] - tol and b.top >= lonlat[3] - tol)
+
+
+def polygons_cover(path: Path, lonlat: tuple, tol_deg: float = 1e-6) -> bool:
+    """Was the polygon file (its `bbox` member) cut to a box that contains this one?"""
+    b = read_json(path).get("bbox") or (0, 0, 0, 0)
+    return (b[0] <= lonlat[0] + tol_deg and b[1] <= lonlat[1] + tol_deg
+            and b[2] >= lonlat[2] - tol_deg and b[3] >= lonlat[3] - tol_deg)
+
+
+def clip_polygons(features: list[dict], lonlat: tuple, field: str) -> list[dict]:
+    """GeoJSON polygon features (EPSG:4326) cut to a lon/lat box, as features with `code` (the class in
+    `field`) and `area` (square degrees), the largest first. The sea polygons of Coastal Zones span
+    whole basins; only the piece inside the box is kept."""
+    import shapely
+    from shapely.geometry import mapping, shape
+
+    rect = shapely.box(*lonlat)
+    out = []
+    for f in features:
+        if not f.get("geometry"):
+            continue
+        g = shape(f["geometry"])
+        g = (g if g.is_valid else shapely.make_valid(g)).intersection(rect)
+        # a polygon that only touches the box leaves lines and points: keep the polygons
+        parts = [q for p in shapely.get_parts(g) for q in shapely.get_parts(p) if q.geom_type == "Polygon" and q.area > 0]
+        if parts:
+            g = shapely.MultiPolygon(parts)
+            out.append({"type": "Feature", "properties": {"code": int(f["properties"][field]), "area": float(g.area)},
+                        "geometry": mapping(g)})
+    return sorted(out, key=lambda f: -f["properties"]["area"])
 
 
 # ----------------------------------------------------------------------------- reprojection
@@ -193,6 +231,26 @@ def read_classes(paths: list[Path], bbox: dict) -> np.ndarray:
         fill = (out == 0) & np.isfinite(tmp)
         out[fill] = tmp[fill].astype(np.uint8)
     return out
+
+
+def read_polygons(path: Path, bbox: dict) -> np.ndarray:
+    """Class polygons (`clip_polygons` features) burnt onto the grid as int32 codes, in the file's order
+    (the largest first, so a small polygon is never hidden); 0 where nothing maps. Cells within two
+    cells of a polygon take the nearest class: the generalised outlines leave slivers one cell wide."""
+    from rasterio.features import rasterize
+    from rasterio.warp import transform_geom
+
+    features = read_json(path)["features"]
+    shape = (bbox["height"], bbox["width"])
+    if not features:
+        return np.zeros(shape, np.int32)
+    geoms = transform_geom("EPSG:4326", bbox["crs"], [f["geometry"] for f in features])
+    codes = rasterize(zip(geoms, (int(f["properties"]["code"]) for f in features)), out_shape=shape,
+                      transform=grid_transform(bbox), fill=0, dtype="int32")
+    if (codes > 0).any():
+        dist, idx = ndimage.distance_transform_edt(codes == 0, return_indices=True)
+        codes = np.where(dist <= 2.0, codes[tuple(idx)], codes)
+    return codes
 
 
 def read_bathy(path: Path, bbox: dict, resampling: str = "cubic") -> tuple[np.ndarray, dict]:
@@ -288,12 +346,16 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
     derived.mkdir(parents=True, exist_ok=True)
     npz, tif, meta_path = derived / "grid.npz", derived / "z.tif", derived / "grid.json"
     bbox, lonlat = grid_box(G, points)
+    cz_path = coastal_zones_path(params, name)
+    cz_file = cz_path.name if cz_path.exists() else None
     if npz.exists() and meta_path.exists() and not force:
         old = json.loads(meta_path.read_text())
-        if all(old.get(k) == bbox[k] for k in ("crs", "cell_m", "minx", "miny", "maxx", "maxy")):
+        same_box = all(old.get(k) == bbox[k] for k in ("crs", "cell_m", "minx", "miny", "maxx", "maxy"))
+        if same_box and old.get("coastal_zones_file") == cz_file:
             log(f"have {npz.relative_to(ROOT)} (use --force to rebuild)")
             return load_grid(derived)
-        log(f"the grid box changed ({old.get('width')} x {old.get('height')} -> {bbox['width']} x {bbox['height']} cells); rebuilding")
+        log(f"the grid box changed ({old.get('width')} x {old.get('height')} -> {bbox['width']} x {bbox['height']} cells); rebuilding"
+            if not same_box else f"the grid has no Coastal Zones layer and {cz_file} is there; rebuilding")
     log(f"grid {bbox['width']} x {bbox['height']} cells of {bbox['cell_m']:g} m in {bbox['crs']} "
         f"({bbox['width'] * bbox['height'] / 1e6:.2f} M cells)")
     present = dem_paths(params, name)
@@ -319,6 +381,11 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
         extra = np.isin(landcover, [c for c in np.unique(landcover) if c not in (0, 80)]) & ~land
         land |= extra
         log(f"land cover adds {int(extra.sum())} land cells under the {G['land_threshold_m']:g} m threshold")
+    coastal = read_polygons(cz_path, bbox) if cz_file else np.zeros(land.shape, np.int32)
+    if cz_file and not polygons_cover(cz_path, lonlat):
+        raise SystemExit(f"{cz_path.relative_to(ROOT)} does not cover the grid; run scripts/03_get_coastal_zones.py again")
+    if not cz_file:
+        log("no Coastal Zones extract (scripts/03_get_coastal_zones.py); the figures go without that layer")
     z, stats = merge_land_sea(dem, bathy, land, G)
     log(f"z {stats['z_min']:.1f}..{stats['z_max']:.1f} m, land {stats['land_fraction']:.0%}, "
         f"{stats['sea_cells_filled_from_neighbours']} sea cells filled from neighbours")
@@ -327,8 +394,14 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
         codes, counts = np.unique(landcover[land], return_counts=True)
         lc_fractions = {int(c): float(n / max(1, land.sum())) for c, n in zip(codes, counts)}
         log("land cover on land: " + ", ".join(f"{c}: {f:.0%}" for c, f in sorted(lc_fractions.items(), key=lambda kv: -kv[1])))
+    codes, counts = np.unique(coastal[land], return_counts=True)
+    cz_fractions = {int(c): float(n / max(1, land.sum())) for c, n in zip(codes, counts) if c > 0}
+    if cz_file:
+        log(f"Coastal Zones: {len(np.unique(coastal[coastal > 0]))} classes, {(coastal > 0).mean():.0%} of the grid, "
+            f"{sum(cz_fractions.values()):.0%} of the land; largest on land: "
+            + ", ".join(f"{c}: {f:.0%}" for c, f in sorted(cz_fractions.items(), key=lambda kv: -kv[1])[:6]))
 
-    np.savez_compressed(npz, z=z, land=land, dem=dem, bathy=bathy, landcover=landcover)
+    np.savez_compressed(npz, z=z, land=land, dem=dem, bathy=bathy, landcover=landcover, coastal_zones=coastal)
     with rasterio.open(tif, "w", driver="GTiff", width=bbox["width"], height=bbox["height"], count=2, dtype="float32",
                        crs=bbox["crs"], transform=grid_transform(bbox), compress="deflate", tiled=True) as dst:
         dst.write(z, 1)
@@ -339,17 +412,19 @@ def build_grid(params: dict, tcfg: dict, points: list[dict], *, force: bool = Fa
             "dem_files": [p.name for p in present],
             "bathymetry_file": bpath.name, "bathymetry": binfo, **stats,
             "landcover_files": [p.name for p in lc_paths], "landcover_fractions_on_land": lc_fractions,
+            "coastal_zones_file": cz_file, "coastal_zones_fractions_on_land": cz_fractions,
             "built": time.strftime("%Y-%m-%d %H:%M")}
     meta_path.write_text(json.dumps(meta, indent=2))
-    return {"z": z, "land": land, "dem": dem, "bathy": bathy, "landcover": landcover, "meta": meta}
+    return {"z": z, "land": land, "dem": dem, "bathy": bathy, "landcover": landcover, "coastal_zones": coastal, "meta": meta}
 
 
 def load_grid(derived: Path) -> dict:
     data = np.load(derived / "grid.npz")
     meta = json.loads((derived / "grid.json").read_text())
     landcover = data["landcover"] if "landcover" in data.files else np.zeros(data["z"].shape, np.uint8)
+    coastal = data["coastal_zones"] if "coastal_zones" in data.files else np.zeros(data["z"].shape, np.int32)
     return {"z": data["z"], "land": data["land"].astype(bool), "dem": data["dem"], "bathy": data["bathy"],
-            "landcover": landcover, "meta": meta}
+            "landcover": landcover, "coastal_zones": coastal, "meta": meta}
 
 
 def xy_to_rowcol(x, y, meta: dict) -> tuple[np.ndarray, np.ndarray]:

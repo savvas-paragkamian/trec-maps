@@ -15,10 +15,11 @@ def main() -> None:
     log(f"grid box lon {lonlat[0]:.4f}..{lonlat[2]:.4f}, lat {lonlat[1]:.4f}..{lonlat[3]:.4f} ({bbox['crs']})")
     for lat_s, lon_s in terrain.dem_tiles_for(lonlat):
         dest = terrain.dem_path(params, tcfg["name"], lat_s, lon_s)
-        if terrain.window_is_short(dest, lonlat, terrain.tile_extent(lat_s, lon_s, 1)) and not args.dry_run:
-            log(f"{dest.name} does not cover the current grid box; fetching it again")
-            dest.unlink()
-        fetch.read_cog_window(terrain.dem_tile_url(params, lat_s, lon_s), lonlat, dest, dry_run=args.dry_run, log=log)
+        short = terrain.window_is_short(dest, lonlat, terrain.tile_extent(lat_s, lon_s, 1))
+        if short:
+            log(f"{dest.name} does not cover the current grid box")
+        fetch.read_cog_window(terrain.dem_tile_url(params, lat_s, lon_s), lonlat, dest, refresh=short,
+                              dry_run=args.dry_run, log=log)
 
 
 if __name__ == "__main__":

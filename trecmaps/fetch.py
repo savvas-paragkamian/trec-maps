@@ -1,7 +1,12 @@
 """Downloads: the only code in trecmaps that touches the network (used by scripts/0*_get_*.py)."""
 from __future__ import annotations
 
+import gzip
+import json
+import math
 import shutil
+import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -45,13 +50,36 @@ def download(url: str, dest: Path, *, dry_run: bool = False, log=print) -> bool:
     return True
 
 
-def read_cog_window(url: str, lonlat: tuple, dest: Path, *, dry_run: bool = False, log=print) -> bool:
-    """Save the lon/lat window of a cloud-optimised GeoTIFF: GDAL fetches only the blocks it needs."""
+def get_json(url: str, params: dict, *, tries: int = 3, timeout: float = 600) -> dict:
+    """GET `url?params` and parse the JSON answer (gzip accepted). An ArcGIS map service reports a failed
+    query as an `error` member of a 200 answer; that and network errors are tried again after a pause."""
+    req = urllib.request.Request(url + "?" + urllib.parse.urlencode(params),
+                                 headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"})
+    for attempt in range(1, tries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    body = gzip.decompress(body)
+            answer = json.loads(body)
+            if not (isinstance(answer, dict) and "error" in answer):
+                return answer
+            problem = f"the service answered {answer['error']}"
+        except (OSError, ValueError) as exc:               # URLError and timeouts are OSErrors
+            problem = repr(exc)
+        if attempt < tries:
+            time.sleep(10 * attempt)
+    raise SystemExit(f"{url}: {problem} ({tries} tries)")
+
+
+def read_cog_window(url: str, lonlat: tuple, dest: Path, *, refresh: bool = False, dry_run: bool = False, log=print) -> bool:
+    """Save the lon/lat window of a cloud-optimised GeoTIFF: GDAL fetches only the blocks it needs.
+    `refresh` reads a window that exists again; the old file stays until the new one is saved."""
     import rasterio
     from rasterio.windows import Window, from_bounds, intersection
 
     dest = Path(dest)
-    if dest.exists():
+    if dest.exists() and not refresh:
         log(f"have {dest.name} ({dest.stat().st_size / 2**20:.1f} MiB), skipped")
         return True
     if dry_run:
@@ -65,7 +93,11 @@ def read_cog_window(url: str, lonlat: tuple, dest: Path, *, dry_run: bool = Fals
                        GDAL_HTTP_USERAGENT=USER_AGENT)
     try:
         with env, rasterio.open("/vsicurl/" + url) as src:
-            window = from_bounds(*lonlat, transform=src.transform).round_offsets().round_lengths()
+            # whole pixels, rounded outward: rounded to the nearest pixel the saved window fell up to half a
+            # pixel short of the box, so `terrain.window_is_short` had it fetched again on every run
+            w = from_bounds(*lonlat, transform=src.transform)
+            col, row = math.floor(w.col_off), math.floor(w.row_off)
+            window = Window(col, row, math.ceil(w.col_off + w.width) - col, math.ceil(w.row_off + w.height) - row)
             window = intersection(window, Window(0, 0, src.width, src.height))
             if window.width <= 0 or window.height <= 0:
                 log(f"the window lies outside {Path(url).name}, skipped")
@@ -73,7 +105,9 @@ def read_cog_window(url: str, lonlat: tuple, dest: Path, *, dry_run: bool = Fals
             data = src.read(1, window=window)
             profile = {"driver": "GTiff", "width": data.shape[1], "height": data.shape[0], "count": 1, "dtype": data.dtype,
                        "crs": src.crs, "transform": src.window_transform(window), "nodata": src.nodata, "compress": "deflate"}
-    except RasterioIOError:
+    except RasterioIOError as exc:
+        if "404" not in str(exc):                          # a network problem is not a missing tile
+            raise SystemExit(f"{Path(url).name}: {exc}")
         log(f"no tile {Path(url).name} (an all-ocean tile is not published), skipped")
         return False
     except WindowError:

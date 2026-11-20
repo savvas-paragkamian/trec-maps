@@ -1,6 +1,9 @@
 """Configuration: YAML parameters, transect definitions, small shared helpers."""
 from __future__ import annotations
 
+import gzip
+import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -46,20 +49,46 @@ def all_transects(params: dict, path: Path | str | None = None) -> dict[str, dic
     return transects
 
 
+def output_stem(tcfg: dict) -> str:
+    """The name of a transect's figures and of their folder: the land site's ID first, then the transect
+    name without its `_lsi_<n>` (the ID carries that number): thrace_lsi_1 -> 042-01_thrace."""
+    return f"{tcfg['land_site']}_{re.sub(r'_lsi_[0-9]+$', '', tcfg['name'])}"
+
+
 def load_transect(name: str, params: dict | None = None, path: Path | str | None = None) -> dict:
+    """A transect by its name (thrace_lsi_1) or by the name of its figures (042-01_thrace)."""
     transects = all_transects(params or load_params(), path)
-    if name not in transects:
+    by_stem = {output_stem(t): t for t in transects.values()}
+    if name not in transects and name not in by_stem:
         raise SystemExit(f"unknown transect {name!r}; `make list` prints the known ones")
-    return transects[name]
+    return transects.get(name) or by_stem[name]
 
 
-def transect_dirs(params: dict, name: str) -> tuple[Path, Path]:
-    """(derived_dir/name, output_dir/name), created."""
-    derived = params["paths"]["derived_dir"] / name
-    out = params["paths"]["output_dir"] / name
+def transect_dirs(params: dict, tcfg: dict) -> tuple[Path, Path, str]:
+    """(derived_dir/<name>, output_dir/<stem>, stem), created; a figure is `out / f"{stem}_profile.png"`."""
+    stem = output_stem(tcfg)
+    derived = params["paths"]["derived_dir"] / tcfg["name"]
+    out = params["paths"]["output_dir"] / stem
     derived.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
-    return derived, out
+    return derived, out, stem
+
+
+def read_json(path: Path | str):
+    """A JSON file, gzipped when its name ends in .gz."""
+    path = Path(path)
+    with (gzip.open if path.suffix == ".gz" else open)(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_json(obj, dest: Path | str) -> None:
+    """Write JSON (gzipped when the name ends in .gz) as `<dest>.part`, then rename."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    with (gzip.open if dest.suffix == ".gz" else open)(part, "wt", encoding="utf-8") as f:
+        json.dump(obj, f, separators=(",", ":"))
+    part.rename(dest)
 
 
 def hex_to_rgb(color: str) -> np.ndarray:
@@ -97,8 +126,3 @@ def apply_transect_overrides(params: dict, tcfg: dict) -> dict:
         if isinstance(tcfg.get(section), dict):
             deep_update(params[section], tcfg[section])
     return params
-
-
-def landcover_classes(params: dict) -> dict:
-    """{code: (label, '#rrggbb')} from sources.landcover.classes."""
-    return {int(k): (v[0], v[1]) for k, v in params["sources"]["landcover"]["classes"].items()}

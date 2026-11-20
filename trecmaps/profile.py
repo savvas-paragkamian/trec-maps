@@ -9,6 +9,7 @@ from pyproj import Transformer
 from scipy import ndimage
 from shapely.geometry import LineString, Point
 
+from .render import soften_hex
 from .terrain import xy_to_rowcol
 
 
@@ -173,8 +174,10 @@ def sample_line(line: LineString, grid: dict, s0: float, step_m: float) -> pd.Da
     z = ndimage.map_coordinates(grid["z"], [row, col], order=1, mode="nearest")
     land = ndimage.map_coordinates(grid["land"].astype(np.uint8), [row, col], order=0, mode="nearest").astype(bool)
     landcover = ndimage.map_coordinates(grid["landcover"], [row, col], order=0, mode="nearest").astype(int)
+    coastal = ndimage.map_coordinates(grid["coastal_zones"], [row, col], order=0, mode="nearest").astype(int)
     lon, lat = Transformer.from_crs(meta["crs"], "EPSG:4326", always_xy=True).transform(x, y)
-    return pd.DataFrame({"s": s - s0, "x": x, "y": y, "lon": lon, "lat": lat, "z": z, "land": land, "landcover": landcover})
+    return pd.DataFrame({"s": s - s0, "x": x, "y": y, "lon": lon, "lat": lat, "z": z, "land": land, "landcover": landcover,
+                         "coastal_zone": coastal})
 
 
 def z_at(profile: pd.DataFrame, s) -> np.ndarray:
@@ -281,6 +284,43 @@ def _draw_terrain(ax, s, z, land, ylo, C):
     ax.axhline(0.0, color=C["sea_level"], lw=0.7, ls=(0, (4, 3)), zorder=3)
 
 
+def draw_class_strip(ax, s, codes, colours, frac, edge) -> list[tuple[float, float, int]]:
+    """A strip along the foot of the panel, `frac` of its height, coloured by the class at each distance;
+    a white hairline where the class changes (several legend colours are close). Returns the runs
+    drawn as (from, to, class)."""
+    runs = []
+    change = np.flatnonzero(np.diff(codes)) + 1
+    for i, j in zip(np.r_[0, change], np.r_[change, len(codes)]):
+        x0 = s[i] if i == 0 else (s[i - 1] + s[i]) / 2
+        x1 = s[j - 1] if j == len(codes) else (s[j - 1] + s[j]) / 2
+        if int(codes[i]) in colours:
+            ax.axvspan(x0, x1, ymin=0.0, ymax=frac, color=colours[int(codes[i])], lw=0, zorder=4.4)
+            runs.append((float(x0), float(x1), int(codes[i])))
+        if i > 0:
+            ax.axvline(x0, ymin=0.0, ymax=frac, color="white", lw=0.5, zorder=4.5)
+    ax.plot([0, 1], [frac, frac], transform=ax.transAxes, color=edge, lw=0.5, zorder=4.6)
+    return runs
+
+
+def class_legend(fig, codes, colours, classes, title, subtitle, edge, right=0.94) -> None:
+    """The classes of a strip as a legend at the top right of the figure, in the order the path meets them
+    (land to sea), read row by row (a legend fills by column); fewer columns when it would reach the subtitle."""
+    from matplotlib.patches import Patch
+    order = [c for c in dict.fromkeys(np.asarray(codes).tolist()) if c in colours]
+    renderer = fig.canvas.get_renderer()
+    for ncol in (min(len(order), 3), 2, 1):
+        rows = -(-len(order) // ncol)
+        cells = [order[r * ncol + c] if r * ncol + c < len(order) else None for c in range(ncol) for r in range(rows)]
+        handles = [Patch(facecolor=colours[c], edgecolor=edge, lw=0.3, label=classes[c][0]) if c is not None
+                   else Patch(alpha=0.0, label="") for c in cells]
+        leg = fig.legend(handles=handles, loc="upper right", bbox_to_anchor=(right, 0.995), ncol=ncol, fontsize=6,
+                         frameon=False, handlelength=1.5, handleheight=0.8, handletextpad=0.5, columnspacing=1.3,
+                         labelspacing=0.3, borderaxespad=0.0, title=title, title_fontsize=6.2, alignment="left")
+        if ncol == 1 or leg.get_window_extent(renderer).x0 > subtitle.get_window_extent(renderer).x1 + 10:
+            break
+        leg.remove()
+
+
 def _draw_zones(ax, zones, a, b, s_min, s_max, ytop, yspan, C, *, min_frac=0.08, fontsize=6, stagger=0.0):
     """Shade the zones; label those wide enough for the panel, alternating two rows when `stagger` > 0."""
     n = 0
@@ -320,6 +360,11 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
                          "axes.spines.top": False, "axes.spines.right": False, "axes.edgecolor": muted,
                          "xtick.color": muted, "ytick.color": muted, "axes.labelcolor": "#20262e"})
     s, z, land = profile["s"].to_numpy(), profile["z"].to_numpy(), profile["land"].to_numpy(bool)
+    # Copernicus Coastal Zones along the path: a strip at the foot of every panel, when the transect has the layer
+    CZ = params["sources"]["coastal_zones"]
+    cz = profile["coastal_zone"].to_numpy(int) if "coastal_zone" in profile.columns else np.zeros(len(s), int)
+    cz_colours = {int(c): soften_hex(v[1], CZ.get("soften", [1, 1])) for c, v in CZ["classes"].items()}
+    strip = float(P.get("coastal_zones_strip_frac", 0.0)) if np.isin(cz, list(cz_colours)).any() else 0.0
     step = float(P["step_m"])
     brk = float(P["break_at_m"])
     s_min, s_max = float(s.min()), float(s.max())
@@ -367,6 +412,8 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
     for k, (ax, (a, b)) in enumerate(zip(axes, ranges)):
         m = (s >= a - 2 * step) & (s <= b + 2 * step)
         _draw_terrain(ax, s[m], z[m], land[m], ylo, C)
+        if strip:
+            draw_class_strip(ax, s[m], cz[m], cz_colours, strip, C["ground_line"])
         _draw_zones(ax, P["zones"], a, b, s_min, s_end, yhi, yspan, C)
         for _, r in land_samples.iterrows():
             if a <= r.s <= b:
@@ -397,6 +444,8 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
         ztop = max(float(z[m].max()) * 1.6, 12.0)
         zlo = -max(6.0, 0.35 * ztop)
         _draw_terrain(ax0, s[m], z[m], land[m], zlo, C)
+        if strip:
+            draw_class_strip(ax0, s[m], cz[m], cz_colours, strip, C["ground_line"])
         wide = zb - za > 1.2 * (float(zoom.get("to_m", 120.0)) - float(zoom.get("from_m", -320.0)))   # widened for a far sample
         _draw_zones(ax0, P["zones"], za, zb, s_min, s_end, ztop, ztop - zlo, C, min_frac=0.05 if wide else 0.0,
                     fontsize=5.6, stagger=0.11)
@@ -439,15 +488,19 @@ def plot_profile(profile: pd.DataFrame, land_samples: pd.DataFrame, stations: pd
 
     fig.supxlabel("Distance along the transect path from the shoreline (inland is negative)", fontsize=8, color=muted, y=0.055)
     fig.text(0.01, 0.975, tcfg["title"], fontsize=11, fontweight="bold", va="top", color="#20262e")
-    fig.text(0.01, 0.925, tcfg.get("subtitle", ""), fontsize=7.5, va="top", color=muted)
-    fig.text(0.99, 0.008, f"Land: {params['sources']['dem']['citation']}.  Sea floor: {params['sources']['bathymetry']['citation']}.",
-             fontsize=5, ha="right", va="bottom", color=muted)
+    subtitle = fig.text(0.01, 0.925, tcfg.get("subtitle", ""), fontsize=7.5, va="top", color=muted)
+    credit = f"Land: {params['sources']['dem']['citation']}.  Sea floor: {params['sources']['bathymetry']['citation']}."
+    if strip:
+        class_legend(fig, cz, cz_colours, CZ["classes"], "Copernicus Coastal Zones 2018 along the path, land to sea "
+                     "(the strip at the foot of each panel)", subtitle, muted)
+        credit = f"Land cover / land use: {CZ['citation']}.\n" + credit
+    fig.text(0.99, 0.008, credit, fontsize=5, ha="right", va="bottom", color=muted, linespacing=1.3)
     fig.canvas.draw()
     for ax, (a, b) in panels:
         bb = ax.get_window_extent()
         y0, y1 = ax.get_ylim()
         ve = ((b - a) / bb.width) / ((y1 - y0) / bb.height)
-        ax.text(0.99, 0.02, f"vertical exaggeration x{ve:.0f}", transform=ax.transAxes, ha="right", va="bottom",
+        ax.text(0.99, 0.02 + strip, f"vertical exaggeration x{ve:.0f}", transform=ax.transAxes, ha="right", va="bottom",
                 fontsize=5.5, color=muted)
     fig.savefig(out_png, dpi=F["dpi"])
     fig.savefig(out_pdf)

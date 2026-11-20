@@ -15,10 +15,11 @@ def main() -> None:
     size = int(params["sources"]["landcover"].get("tile_deg", 3))
     for lat_s, lon_s in terrain.landcover_tiles_for(params, lonlat):
         dest = terrain.landcover_path(params, tcfg["name"], lat_s, lon_s)
-        if terrain.window_is_short(dest, lonlat, terrain.tile_extent(lat_s, lon_s, size)) and not args.dry_run:
-            log(f"{dest.name} does not cover the current grid box; fetching it again")
-            dest.unlink()
-        fetch.read_cog_window(terrain.landcover_url(params, lat_s, lon_s), lonlat, dest, dry_run=args.dry_run, log=log)
+        short = terrain.window_is_short(dest, lonlat, terrain.tile_extent(lat_s, lon_s, size))
+        if short:
+            log(f"{dest.name} does not cover the current grid box")
+        fetch.read_cog_window(terrain.landcover_url(params, lat_s, lon_s), lonlat, dest, refresh=short,
+                              dry_run=args.dry_run, log=log)
 
 
 if __name__ == "__main__":
